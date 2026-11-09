@@ -4,7 +4,7 @@
 SANDBOXED copy of recipe/bench/quality-probe.py (see sandbox_run below).
 
 Greedy, thinking OFF by default (most sensitive to weight damage). Same prompts for every model.
-Env: PORT (8000), SERVED_MODEL, API_KEY (required), EVALDATA (bench/evaldata; see fetch-evaldata.sh), N_GSM (200), CONC (4),
+Env: EFFORT (e.g. max: thinking on at that reasoning_effort), TEMP (0), TOP_P (unset), PORT (8000), SERVED_MODEL, API_KEY (required), EVALDATA (bench/evaldata; see fetch-evaldata.sh), N_GSM (200), CONC (4),
 THINKING (0/1), MAX_TOKENS (4096), OUT (jsonl path), SKIP_HE=1 to skip HumanEval.
 Usage: API_KEY=... PORT=8000 python3 quality-probe.py
 """
@@ -19,6 +19,9 @@ N_GSM = int(os.environ.get("N_GSM", "200"))
 CONC = int(os.environ.get("CONC", "4"))
 THINK = os.environ.get("THINKING", "0") == "1"
 MAXT = int(os.environ.get("MAX_TOKENS", "4096"))
+EFFORT = os.environ.get("EFFORT")  # set => thinking on at this reasoning_effort (overrides THINKING)
+TEMP = float(os.environ.get("TEMP", "0"))
+TOP_P = os.environ.get("TOP_P")
 OUT = os.environ.get("OUT", f"/tmp/quality-{MODEL.replace('/', '_')}-{int(time.time())}.jsonl")
 
 # --- sandbox: model-written code never runs on the host. Each program runs in a throwaway container: no network, read-only
@@ -51,8 +54,13 @@ sandbox_selftest()
 
 def chat(content):
     body = {"model": MODEL, "messages": [{"role": "user", "content": content}],
-            "temperature": 0, "max_tokens": MAXT,
+            "temperature": TEMP, "max_tokens": MAXT,
             "chat_template_kwargs": {"enable_thinking": THINK, "thinking": THINK}}
+    if TOP_P:
+        body["top_p"] = float(TOP_P)
+    if EFFORT:
+        body["chat_template_kwargs"] = {"enable_thinking": True, "thinking": True}
+        body["reasoning_effort"] = EFFORT
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/chat/completions", json.dumps(body).encode(),
                                  {"Content-Type": "application/json", "Authorization": f"Bearer {KEY}"})
     for attempt in range(3):
@@ -118,4 +126,4 @@ if __name__ == "__main__":
     with open(OUT, "w") as f:
         for r in res:
             f.write(json.dumps(r) + "\n")
-    print("wrote", OUT, "| thinking", THINK)
+    print("wrote", OUT, "| thinking", THINK or bool(EFFORT), "| effort", EFFORT, "| temperature", TEMP, "| top_p", TOP_P)

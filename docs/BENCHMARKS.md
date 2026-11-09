@@ -23,7 +23,7 @@ include cache warm-up), so where a number is "warm" it is the second pass.
   - **Performance** (decode, prefill, six-way, mixed, interference, soak, LMCache): no effort or thinking field, so the server default applies: thinking **on** at the
     recipe's default effort (about 50, "high"). Prefill and restore times do not depend on it. Decode rates do: they are for greedy code edits at that default, and
     speculative-decoding acceptance, so speed, will differ at effort 100 or at temperature 1.0.
-  The `effort: max` that `model-cli` sends in real use was not benchmarked.
+  The `effort: max` that `model-cli` sends in real use is benchmarked separately in [Max effort](#max-effort-model-card-sampling-benchmaxeffortsh) below.
 - **VRAM peaks** sample `nvidia-smi` once a second (0.5 s for the mixed test) during the run; the margin is against 97,887 MiB.
 - **Quality** (`bench/run_quality.sh`): Diffbot's own validation suite from the recipe. Its HumanEval step executes model-written code, and
   the upstream probe runs it on the host; `bench/quality_probe_sandboxed.py` runs each program in a throwaway container instead (no network,
@@ -201,6 +201,22 @@ after the fix: 19,968 of 25,806 tokens (77%, the maximum possible there), 25,728
 | (`bench/inline_system_test.py`, Claude Code's proportions) no inline / inline / folded | 99.7% / 22.1% / 99.4% |
 
 Mechanism and fix: [TUNING.md §4b](TUNING.md#4b-caching-what-is-reused-and-what-is-not).
+
+## Max effort, model-card sampling (`bench/maxeffort.sh`)
+
+Settings: thinking on, `reasoning_effort=max`, temperature 1.0, top_p 0.95 (what the model card's results use). Everything above ran greedy at the default effort
+(see Methodology), so this is the run closest to how the model is used from an agent harness.
+
+**Decode, same code-edit prompt as above** (`bench/decode_effort.py`, 25.6k-token warm prefix, up to 6000 output tokens including the reasoning, two passes):
+
+| Streams | Aggregate tok/s (two passes) | Per stream |
+|---|---|---|
+| 1 | 246 / 248 | 246-248 |
+| 4 | 469 / 497 | 123-139 |
+| 6 | 530 / 499 | 90-100 |
+
+That matches the default-effort numbers (~270 / ~500 / ~540): for a prompt that mostly copies from its context, speculative decoding is not hurt by max effort or temperature 1.0.
+It is the favourable case, though; see the quality run below for reasoning-heavy text.
 
 ## Engram-on-NVMe micro-benchmark (`patches/engram-nvme/test_nvme_lookup.py`)
 
