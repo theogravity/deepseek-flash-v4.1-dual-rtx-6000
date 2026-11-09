@@ -28,7 +28,7 @@ Threadripper PRO 9965WX (24 cores), 8×32 GiB DDR5-5600, two RTX PRO 6000 (96 GB
 
 | | |
 |---|---|
-| Single-stream cold time-to-first-token | 3.0 s @16k, 6.8 s @60k, 18.6 s @196k, 44.7 s @505k tokens |
+| Single-stream cold prefill (time to first token) | 3.0 s @16k, 6.8 s @60k, 18.6 s @196k, 44.7 s @505k tokens (~11k tok/s at long lengths; [details](docs/BENCHMARKS.md#prefill)) |
 | Single-stream decode (greedy code edits) | ~250 tok/s warm |
 | Aggregate decode, 1 / 4 / 6 streams | ~250 / ~450 / ~535 tok/s |
 | Six concurrent ~404k-token requests (2.4M tokens) | all complete: 265 s cold, 1–4 s when repeated |

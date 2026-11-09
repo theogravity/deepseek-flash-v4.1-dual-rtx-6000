@@ -21,17 +21,64 @@ include cache warm-up), so where a number is "warm" it is the second pass.
   the upstream probe runs it on the host; `bench/quality_probe_sandboxed.py` runs each program in a throwaway container instead (no network,
   read-only root, non-root, no capabilities, memory/pid/CPU caps, with a startup self-test).
 
-## Single stream (concurrency 1), final configuration
+## Prefill
 
-| Prompt | Cold time to first token | Prefill rate |
+All prompts are random "codeNNNNN" words (~3.1 tokens per word) with a needle at the start, greedy, a fresh seed per cold measurement. Two kinds of
+numbers appear below and should not be mixed: **TTFT** (`bench/lmc_ask.py`, time to the first streamed token, which is the prefill plus one token) and
+**total request time** (`bench/long_prefill.py`, which also includes the model's short reasoning and answer, a few seconds). Single runs vary by about ±15%
+(Engram rows touched, cache state), so read the differences below as approximate.
+
+**Cold prefill, concurrency 1, final configuration** (chunk 8192, KV 11 GiB, LMCache on, CPU experts for decode only), TTFT:
+
+| Prompt | Cold TTFT | Prefill rate |
 |---|---|---|
-| 16k tokens | 3.0 s | ~5.3k tok/s (fixed per-request overhead dominates) |
-| 60k tokens | 6.8 s | ~8.8k tok/s |
-| 196k tokens | 18.6 s | ~10.5k tok/s |
-| 505k tokens | 44.7 s | ~11.3k tok/s |
+| 15,826 tokens | 3.0 s | ~5.3k tok/s (fixed per-request overhead dominates) |
+| 60,046 tokens | 6.8 s | ~8.8k tok/s |
+| 195,600 tokens | 18.6 s | ~10.5k tok/s |
+| 505,214 tokens | 44.7 s | ~11.3k tok/s |
 
-Decode, greedy code edits on the 25.6k warm prefix: **~250 tok/s warm** (192 on the first pass). Cached prompts (GPU prefix cache or LMCache)
-return their first token in ~0.3–2.7 s at any size we tried (see LMCache below).
+For reference, the model card reports ~11.2–11.5k tok/s for a fresh ~40k-token prefill on Diffbot's own 2-GPU build. The recipe's needle script (a repeated sentence,
+so highly cacheable and not comparable to the numbers above) read 14.0k tok/s at 100k tokens, 16.6k at 249k and 17.4k at 448k.
+
+**Prefill chunk size at ~500k tokens** (`--max-num-batched-tokens`, concurrency 1, total request time including the short answer):
+
+| Chunk | KV pool | Run | Time | Rate |
+|---|---|---|---|---|
+| 16384 | 8.5 GiB (1.73M tokens) | 498,351 tokens | 47.5 s | 10.5k tok/s |
+| 8192 | 8.5 GiB | 498,202 / 498,401 tokens | 55.2 s / 52.4 s | 9.0k / 9.5k tok/s |
+| 8192 (final) | 11 GiB (2.77M tokens) | 498,421 tokens | 57.9 s | 8.6k tok/s |
+
+So the 8192 chunk costs roughly 10–20% of single-stream prefill speed and buys ~3.2 GiB of VRAM (that is what pays for the larger KV pool); for six concurrent cold
+prompts the difference was larger (about 30%, below). The later TTFT run above (44.7 s for 505k tokens, ~11.3k tok/s) came out faster than these earlier
+total-time runs on the same configuration, which is the ±15% noise at work.
+
+**1M-token cold prefill, concurrency 1, chunk 16384:**
+
+| Configuration | Time |
+|---|---|
+| no LMCache, `expandable_segments` on, KV 8 GiB | 92.7 s (996,768 tokens, 10.8k tok/s) |
+| no LMCache, KV 7.5 GiB / 10.5 GiB | 103–109 s |
+| LMCache on, first runs after enabling it (VRAM margin only ~0.6 GiB) | 135–145 s |
+| LMCache on, KV 6.5 GiB, steady state | 109 s (1,009,950 tokens, TTFT) |
+
+**Concurrent cold prefill** (six requests of ~404k tokens each, 2.42M tokens total): 178 s (13.6k tok/s aggregate) at chunk 16384, KV 8.5 GiB; **265 s (9.1k tok/s
+aggregate)** in the final configuration. Six concurrent ~60k-token requests: 43.9 s of wall time on the GPU-only path (including a 700-token answer each). A 1M-token request plus five ~100k-token ones in parallel
+finished in 157–194 s of wall time with no failures.
+
+**Prefill on the CPU pools** (`EXL3_CPU_EXPERTS_PREFILL=1`) was slower: 16k prefill 7.0–8.7k vs 10.3k tok/s, 60k prefill 9.5–10.3k vs 12.2–12.5k tok/s, six concurrent 60k
+requests 52 s vs 44 s (these were total-time measurements on the original 512k configuration), so it stays off.
+
+**What prefill costs the Engram patch.** Each 16k-token chunk gathers ~196k Engram rows per layer from NVMe, ~0.42–0.55 s per layer when cold (see the micro-benchmark
+below). That work runs on a side stream and overlaps compute; it is why prefill dropped to ~1–1.4k tok/s before the gather was moved to a 32-thread pool and recovered to ~10k tok/s after.
+
+**Cached prompts skip prefill:** a GPU prefix-cache hit returns its first token in ~0.3–0.8 s and an LMCache restore in ~1.5–2.7 s at any size we tried (60k–1M tokens); see LMCache below.
+
+Reproduce: `python3 -I bench/lmc_ask.py <words> <seed>` with `<words>` = 5000 (~16k tokens), 19000 (~60k), 62000 (~196k), 160000 (~505k) and a new seed each time; `python3 -I bench/long_prefill.py 160000 <seed>`
+for the VRAM-sampled run; `python3 -I bench/six400.py 800 128000` for the concurrent test.
+
+## Decode
+
+Single stream, greedy code edits on the 25.6k warm prefix: **~250 tok/s warm** (192 on the first pass). Aggregate decode at 1 / 4 / 6 streams is in the next section.
 
 ## Concurrency
 
