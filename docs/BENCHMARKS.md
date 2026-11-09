@@ -215,8 +215,26 @@ Settings: thinking on, `reasoning_effort=max`, temperature 1.0, top_p 0.95 (what
 | 4 | 469 / 497 | 123-139 |
 | 6 | 530 / 499 | 90-100 |
 
-That matches the default-effort numbers (~270 / ~500 / ~540): for a prompt that mostly copies from its context, speculative decoding is not hurt by max effort or temperature 1.0.
-It is the favourable case, though; see the quality run below for reasoning-heavy text.
+A second pass of the same test (run to read the speculative-decoding counters) gave 244 / 264 (1 stream), 512 / 501 (4) and 521 / 530 (6) tok/s. Drafted tokens accepted: **80.6%**
+(74.6k drafted, 60.2k accepted, k=5). That matches the default-effort numbers (~270 / ~500 / ~540): for a prompt that mostly copies from its context, speculative decoding is not hurt by
+max effort or temperature 1.0. It is the favourable case; the quality run below shows what reasoning-heavy text does.
+
+**Quality and throughput on reasoning text** (`bench/quality_probe_sandboxed.py` with `EFFORT=max TEMP=1.0 TOP_P=0.95`, 6 concurrent requests, output cap 32,000 tokens; one run, so a few
+problems of noise either way; the thinking-off numbers below are greedy):
+
+| | Max effort, temp 1.0 | Thinking off, greedy (earlier) |
+|---|---|---|
+| GSM8K-200 | **195 / 200 = 97.5%** (353 s) | 197 / 200 = 98.5% |
+| HumanEval-164 | **162 / 164 = 98.8%** (744 s) | 158 / 164 = 96.3% |
+| Output tokens per answer, GSM8K | mean 451, median 270, p95 1,594, max 5,643 | n/a |
+| Output tokens per answer, HumanEval | mean 1,458, median 626, p95 5,052, max 32,000 | n/a |
+| Truncated at 32k / errors | 1 (HumanEval/145 never finished, counted wrong) / 0 | n/a |
+
+- Throughput over the run: ~300 tok/s aggregate (329k output tokens in 1,097 s with six requests in flight), against ~500-530 tok/s for the code-edit decode test above.
+- Speculative-decoding acceptance over the run: **48.3%** of drafted tokens (469.8k drafted, 226.8k accepted), against 80.6% on the code-edit prompt. This is why reasoning-heavy work decodes
+  roughly 40% slower in aggregate than the headline numbers: plan around ~300 tok/s aggregate, not ~500, for max-effort agent turns that think a lot.
+- Thinking on is not a quality loss here: GSM8K is 2 problems lower, HumanEval 4 problems higher. The five GSM8K misses were sampled-answer errors, not truncations.
+- The model card's other settings (1M window, 256k+ output) were not tested; our cap here was 32k.
 
 ## Engram-on-NVMe micro-benchmark (`patches/engram-nvme/test_nvme_lookup.py`)
 
