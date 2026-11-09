@@ -116,6 +116,7 @@ LICENSES/       third-party license texts
 - Under saturation, small requests queue behind huge cold prefills (vLLM schedules FIFO); sessions already decoding are not slowed.
 - Cold prefill is ~10–30% slower than with the recipe's 16384 chunk; that is the price of the larger KV pool (see the tuning table for
   the alternatives, including a 1M-token-window variant).
+- No benchmark here used maximum reasoning effort or the model card's sampling (temperature 1.0, top_p 0.95): quality runs are greedy with thinking off, performance runs are greedy at the server's default effort ([details](docs/BENCHMARKS.md#methodology-and-pitfalls)).
 - Quality beyond the recipe's suite (GSM8K / HumanEval / needles / tool calls / images) is not measured; there is no long-horizon agentic eval.
 - LMCache's docs list speculative decoding as unvalidated; it works here with the recipe's DSpark head, but you are off the beaten path.
 

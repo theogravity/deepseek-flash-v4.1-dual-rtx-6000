@@ -16,6 +16,14 @@ include cache warm-up), so where a number is "warm" it is the second pass.
 - **Prefill** (`bench/lmc_ask.py`, `bench/long_prefill.py`): prompts of random "codeNNNNN" words (~3.1 tokens per word) with a needle at
   the start; time to first streamed token = prefill time. Every cold measurement uses a new seed: the OS page cache keeps the Engram rows
   and the prompts that were touched before, and an early run with a fixed seed looked 5–10× too fast.
+- **Reasoning settings used (read this before comparing numbers).** None of these benchmarks ran at maximum reasoning effort or at the model card's sampling
+  (temperature 1.0, top_p 0.95; the card's results use `reasoning_effort=100`). All use temperature 0, in two groups:
+  - **Quality** (`run_quality.sh`: GSM8K-200, HumanEval-164, short-context sweep, image, needles): greedy, **thinking off** (the scripts send `thinking: false`;
+    the needle test sends `reasoning_effort: none`). It is the setting most sensitive to weight damage, but it says nothing about quality with thinking on at high or max effort.
+  - **Performance** (decode, prefill, six-way, mixed, interference, soak, LMCache): no effort or thinking field, so the server default applies: thinking **on** at the
+    recipe's default effort (about 50, "high"). Prefill and restore times do not depend on it. Decode rates do: they are for greedy code edits at that default, and
+    speculative-decoding acceptance, so speed, will differ at effort 100 or at temperature 1.0.
+  The `effort: max` that `model-cli` sends in real use was not benchmarked.
 - **VRAM peaks** sample `nvidia-smi` once a second (0.5 s for the mixed test) during the run; the margin is against 97,887 MiB.
 - **Quality** (`bench/run_quality.sh`): Diffbot's own validation suite from the recipe. Its HumanEval step executes model-written code, and
   the upstream probe runs it on the host; `bench/quality_probe_sandboxed.py` runs each program in a throwaway container instead (no network,
