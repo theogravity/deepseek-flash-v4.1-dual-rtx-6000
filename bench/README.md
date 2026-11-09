@@ -12,6 +12,7 @@ with: `export API_KEY=...`. Methodology, pitfalls and results: [`../docs/BENCHMA
 - `six400.py [seed] [words]` — six concurrent ~404k-token requests, two passes (cold, then repeated).
 - `lmc_ask.py <words> <seed>` / `lmc_test.py` — time to first token for a deterministic prompt; resend after pushing ~2M tokens through (or after a
   restart) to prove an LMCache restore: low TTFT, `External prefix cache hit rate` > 0 in vLLM's stats, `Retrieved N tokens` in `/root/.cache/lmcache-server.log`.
+- `prefix_demo.py [words] [seed]` — time to first token for a cold prompt, the same prompt with text appended, one word changed in the middle and at the start: shows the caches are prefix caches.
 - `interference.py` — decode tok/s of three streams alone vs while a ~295k-token cold prefill runs.
 - `soak.py [minutes] [seed]` — six workers, mixed request sizes with repeated prompts; samples VRAM / host RAM / LMCache disk every 30 s and reports errors,
   answer correctness, latency and drift.

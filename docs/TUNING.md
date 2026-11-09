@@ -134,6 +134,32 @@ Measured on the running server (LMCache RAM tier set to 48 GiB), from the contai
   If you use LiteLLM, see [`../examples/litellm.yaml`](../examples/litellm.yaml).
 - **`restart: "no"`.** A crash loop leaks `vllm_offload_*.mmap`, `lmcache_l1_pool_*` and `psm_*` files in `/dev/shm`.
 
+## 4b. Caching: what is reused (and what is not)
+
+Both caches are **prefix caches**: a request reuses stored KV only for the longest run of identical tokens starting at token 0.
+
+- **vLLM's automatic prefix cache** keeps KV blocks in GPU memory (on by default: the engine log shows `enable_prefix_caching=True`; block size 64). Each block's hash includes
+  the blocks before it, so one different token invalidates everything after it.
+- **LMCache** (RAM + disk) stores the same KV in 256-token chunks (`--chunk-size 256`) keyed by the token prefix, and restores whole chunks only. A restore that returned
+  59,904 of a 60,080-token prompt (234 × 256) prefilled the remaining 176 tokens normally. Its non-prefix modes (`--enable-segmented-prefix`, `--enable-dedup-content`,
+  `--enable-blend-reorder`) are off, and LMCache's docs list CacheBlend (position-independent reuse) as unsupported for this model.
+- **Model specifics.** The sliding-window layers (window 128) are not stored: vLLM marks that cache group as not prefix-cacheable and replays the last 128 tokens of any hit, and
+  LMCache skips the group. The other, prefix-cacheable groups (the compressed-attention caches and their indexers) are what get stored and restored. Cached tokens are not looked up in the Engram tables again; new tokens still hash the preceding token ids.
+
+What that means in practice (`bench/prefix_demo.py`, 60k-token prompt, time to first token; numbers in [BENCHMARKS.md](BENCHMARKS.md#prefix-cache-behaviour)):
+
+| Change to the prompt | Reuse | TTFT |
+|---|---|---|
+| none (cold) | none | 8.1 s |
+| text appended at the end | everything but the new text | 0.75 s |
+| one word changed at 50% | the first half | 2.3 s |
+| one word changed at the very start | nothing | 4.5 s (a full recompute that ran faster than the cold run only because the OS page cache already held the Engram rows from run A) |
+
+For agents: keep the start of the prompt stable (system prompt, tool definitions, earlier turns) and only append; editing or inserting near the start recomputes everything after
+it, and compaction resets the prefix. The recipe strips Claude Code's `x-anthropic-billing-header` from system messages (`VLLM_DS41_API_SYSTEM_CLEAN=1`) so that header does not break the
+prefix between requests. We did not measure hit rates in a real agent session. To see whether a restore happened, look for `Retrieved N tokens` and `Prefetch request completed` in the LMCache
+server log; vLLM's cumulative `External prefix cache hit rate` moved only a little in our tests, so it is not a reliable per-request signal.
+
 ## 5. Troubleshooting (every one of these was hit)
 
 | Symptom | Cause / fix |

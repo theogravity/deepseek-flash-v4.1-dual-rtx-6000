@@ -107,6 +107,7 @@ LICENSES/       third-party license texts
 
 - One machine, one workload mix. Decode numbers are for greedy code-edit prompts; free-form creative text at temperature 0.6 measured
   about 3× lower because speculative decoding accepts fewer drafts.
+- Caching is prefix-only (vLLM's prefix cache plus LMCache): appended text is cheap, but a change near the start of a prompt recomputes everything after it ([`docs/TUNING.md`](docs/TUNING.md#4b-caching-what-is-reused-and-what-is-not)).
 - Under saturation, small requests queue behind huge cold prefills (vLLM schedules FIFO); sessions already decoding are not slowed.
 - Cold prefill is ~10–30% slower than with the recipe's 16384 chunk; that is the price of the larger KV pool (see the tuning table for
   the alternatives, including a 1M-token-window variant).

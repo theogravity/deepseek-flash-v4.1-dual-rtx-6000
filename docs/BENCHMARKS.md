@@ -125,6 +125,21 @@ Removing the 512-slot VRAM expert cache (to give VRAM to the KV pool) made the C
 Entries are ~1.8 KB per token (a 60k-token prompt wrote 103 MiB; ~12M tokens of test prompts occupied 21 GiB on disk). The restored 60k-token output was identical to the cold run, and restored 1M-token prompts returned the correct needle. With LMCache on and `expandable_segments` off, the 1M-token cold prefill is ~109 s (9.3k tok/s) versus
 92.7 s (10.8k tok/s) for the earlier no-LMCache configuration.
 
+## Prefix-cache behaviour
+
+`bench/prefix_demo.py` (60k tokens, one run, time to first token; a new seed gives different absolute numbers):
+
+| Request | Prompt tokens | TTFT |
+|---|---|---|
+| A: cold prompt | 59,995 | 8.09 s |
+| B: same prompt with a question appended | 60,004 | 0.75 s |
+| C: one word changed at 50% of the prompt | 59,996 | 2.31 s |
+| D: one word changed at the very start | 59,996 | 4.46 s |
+
+B is a near-complete hit, C reuses the first half and recomputes the rest, and D cannot reuse anything because the first token differs. D ran faster than A only because
+the Engram rows for the unchanged text were already in the OS page cache from A (this is our interpretation; the ~3.6 s difference is consistent with the 0.4–0.5 s per layer per
+16k chunk gather cost measured below). How the caches work and what follows for agent prompts: [TUNING.md §4b](TUNING.md#4b-caching-what-is-reused-and-what-is-not).
+
 ## Engram-on-NVMe micro-benchmark (`patches/engram-nvme/test_nvme_lookup.py`)
 
 Rows drawn at random from the whole 384M-row table (cold), one layer, one rank, torch intra-op threads set to 1 as in serving:
