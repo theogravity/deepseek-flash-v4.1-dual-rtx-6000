@@ -8,8 +8,9 @@
 # Prerequisites (see ../README.md): the checkpoint in MODEL_DIR, the recipe image built from its recipe/, the recipe's kernel
 # and cpuexp builds, and the derived LMCache image (patches/lmcache/build_image.sh).
 #
-# Memory budget on a 246 GiB host: container ~90 GiB + LMCache RAM tier 48 GiB; stock recipe needs ~230 GiB without the
-# Engram patch. mem_limit caps the container so a mistake kills it instead of the desktop.
+# Memory (measured, see ../docs/TUNING.md "Host RAM requirements"): vLLM ~77 GiB non-reclaimable + the LMCache RAM tier set below
+# (48 GiB) + OS; estimated minimum ~96-112 GiB, recommended 128 GiB, tested on 246 GiB. The stock recipe needs ~230 GiB without the
+# Engram patch. mem_limit caps the container (page cache inside it is reclaimable); size it to vLLM + L1 + a few GiB on smaller hosts.
 # VRAM: a 500k-token prefill peaks at ~95.9k of 97.9k MiB per card; do not raise --kv-cache-memory without re-measuring
 # (patches in ../bench: long_prefill.py).
 services:
@@ -60,7 +61,7 @@ services:
       # (patches/engram-nvme). Bit-exact with the stock kernel.
       DSV41_ENGRAM_NVME: "1"
       # LMCache multiprocess server (started by start.sh beside vLLM): RAM tier + LRU-evicted disk tier under CACHE_DIR/lmcache.
-      DSV41_LMCACHE_L1_GB: "48"
+      DSV41_LMCACHE_L1_GB: "48"   # RAM tier; start.sh falls back to 16 if this is unset. 8-16 is enough for a few sessions on a smaller host
       DSV41_LMCACHE_L2_GB: "128"
       VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: "0"
       TILELANG_CACHE_DIR: /root/.cache/tilelang

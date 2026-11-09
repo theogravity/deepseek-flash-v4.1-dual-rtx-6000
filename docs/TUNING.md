@@ -8,7 +8,7 @@ at 400k.** All numbers were measured on one machine (Threadripper PRO 9965WX, 8�
 ## 1. What runs where
 
 ```
-host RAM  (~90 GiB container + 48 GiB LMCache RAM tier)     NVMe
+host RAM  (~77 GiB vLLM + LMCache RAM tier, 48 GiB here)       NVMe
   pinned: ~1/3 of the routed experts, embeddings              checkpoint shards (322 GiB), incl. the two Engram tables (103 GiB)
   LMCache server (same container): L1 RAM tier  ----------->  LMCache disk tier (128 GiB cap, LRU) + kernel JIT caches
 GPU x2 (TP2): weights ~77 GiB each, 512-slot expert cache, fp8 KV pool 11 GiB each
@@ -90,7 +90,28 @@ What each knob costs (measured):
   docs show four streams dropping from 511 to ~430 tok/s aggregate, so it is the wrong trade for six sessions.
 - **Engram location.** Tables stay on the model drive. A copy on a PCIe-5 drive measured 35–45% *slower* for the gather (same Samsung
   9100 PRO model on both drives; small random reads are not link-bound).
-- **Host RAM.** Container ~90 GiB + the LMCache RAM tier; keep ≥48 GiB available for the OS.
+- **Host RAM.** ~77 GiB for vLLM plus the LMCache RAM tier you choose; see *Host RAM requirements* below.
+
+### Host RAM requirements
+
+Measured on the running server (LMCache RAM tier set to 48 GiB), from the container's cgroup `memory.stat` and per-process RSS:
+
+| Component | Memory | Notes |
+|---|---|---|
+| vLLM workers (2 × 37.3 GiB) + API server and engine (~2.5 GiB) | **~77 GiB** | non-reclaimable: pinned host-resident experts, embeddings, runtime; does not depend on any LMCache setting |
+| LMCache RAM tier | 49 GiB resident at `DSV41_LMCACHE_L1_GB=48` | whatever you configure, plus ~1 GiB of overhead; pinned, allocated at boot |
+| Page cache inside the container | ~99 GiB at the time | reclaimable; holds the Engram rows and weights that were read, so lookups on hot rows avoid the NVMe |
+| OS / desktop | ~10 GiB | on our machine |
+
+- **Minimum (estimate): about 96–112 GiB** = ~77 GiB (vLLM) + a small LMCache tier (8–16 GiB; entries are ~1.8 KB per token, so 8 GiB holds ~4M tokens) + OS and
+  slack. At that size there is little page cache, so loading and Engram lookups run colder from NVMe (slower, not different in output).
+- **Recommended: 128 GiB** with `DSV41_LMCACHE_L1_GB` around 16–24 (estimate).
+- **What we ran: 246 GiB** with L1 = 48 GiB. The spare ~100 GiB acts as page cache for the 103 GiB of Engram tables.
+- **More than ~250 GiB should not help** (77 GiB vLLM + 48 GiB LMCache + the whole 103 GiB Engram table cached + OS already fits): this is reasoning, not a measurement.
+- Only 246 GiB was ever tested; the minimum and recommended figures are estimates from the breakdown above. Whatever you choose, set the compose
+  `mem_limit` / `memswap_limit` to at least vLLM + L1 + a few GiB (page cache inside the limit is reclaimed under pressure), and `DSV41_LMCACHE_L1_GB`
+  accordingly. The disk tier (`DSV41_LMCACHE_L2_GB`, 128 GiB cap) is independent of RAM.
+- The stock recipe, without the Engram patch, pins ~230 GiB and does not fit on a 246 GiB host.
 
 ## 4. Why each non-obvious piece exists
 

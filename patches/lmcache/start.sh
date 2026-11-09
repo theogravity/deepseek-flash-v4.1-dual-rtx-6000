@@ -2,7 +2,7 @@
 # Entry point for the dsv41 container when LMCache is enabled: start the LMCache multiprocess server
 # beside vLLM (they share GPU memory through CUDA IPC, so it must live in the same container), wait
 # for its port, then exec vLLM with the compose `command` arguments.
-#   DSV41_LMCACHE_L1_GB   pinned host-RAM tier (default 16)        DSV41_LMCACHE_L2_GB   disk tier (default 128)
+#   DSV41_LMCACHE_L1_GB   pinned host-RAM tier (fallback 16 if unset; docker-compose.yml sets 48)        DSV41_LMCACHE_L2_GB   disk tier (default 128)
 #   DSV41_LMCACHE_DIR     disk tier directory (default /root/.cache/lmcache = ~/.cache/dsv41-flash-exl3/lmcache)
 set -u
 export LMCACHE_DISABLE_BANNER=1

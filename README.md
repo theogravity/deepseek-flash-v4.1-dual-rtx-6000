@@ -1,7 +1,7 @@
 # DeepSeek V4.1 Flash on 2× RTX PRO 6000 (Blackwell)
 
 How to run [DeepSeek V4.1 Flash](https://huggingface.co/diffbot/DeepSeek-V4.1-Flash-EXL3-3bpw-2x-RTX-PRO-6000) (Diffbot's EXL3 3-bit
-pack) on **two RTX PRO 6000 Blackwell cards and a 246 GiB workstation**, tuned for **up to 6 concurrent long-context agents**
+pack) on **two RTX PRO 6000 Blackwell cards** (tested on a 246 GiB workstation; see the RAM requirements below), tuned for **up to 6 concurrent long-context agents**
 (512k max context, compaction at 400k), with an API key, a RAM + disk prompt cache and measured numbers.
 
 This repo is the set of changes, patches, configuration and measurements we needed on top of Diffbot's recipe. It does **not**
@@ -16,7 +16,7 @@ changes plus a lot of measuring:
 
 | Change | What it does | Where |
 |---|---|---|
-| **Engram tables on NVMe** | Keeps the 103 GiB of int4 Engram tables in the checkpoint shards and reads only the rows each step needs (bit-exact with the stock kernel, works inside the decode CUDA graph). Container drops from ~230 GiB to ~90 GiB. | [`patches/engram-nvme`](patches/engram-nvme) |
+| **Engram tables on NVMe** | Keeps the 103 GiB of int4 Engram tables in the checkpoint shards and reads only the rows each step needs (bit-exact with the stock kernel, works inside the decode CUDA graph). The pinned memory drops from ~230 GiB to ~77 GiB (measured, vLLM workers). | [`patches/engram-nvme`](patches/engram-nvme) |
 | **LMCache, RAM + disk** | Prompt-cache tiers that restore a 1M-token prompt in ~2–3 s instead of 109 s of prefill, and survive restarts. | [`patches/lmcache`](patches/lmcache) |
 | **API key** | `--api-key` plus a small auth patch so clients that send `x-api-key` (LiteLLM's `anthropic/` provider) work. | [`patches/api-auth`](patches/api-auth) |
 | **Tuned serving config** | 512k window, 6 sequences, prefill chunk 8192, 2.77M-token KV pool, CPU host-experts for decode only. | [`compose/docker-compose.yml`](compose/docker-compose.yml) |
@@ -40,7 +40,9 @@ Threadripper PRO 9965WX (24 cores), 8×32 GiB DDR5-5600, two RTX PRO 6000 (96 GB
 ## Requirements
 
 - Two RTX PRO 6000 Blackwell Workstation (sm_120, 96 GB each) with working peer-to-peer between them, and a CUDA 13-capable driver (tested 615.71.09). Other cards are untested.
-- About 246 GiB of host RAM (this setup uses ~90 GiB + 48 GiB for the LMCache RAM tier). Less RAM works if you shrink the LMCache tier.
+- Host RAM: ~77 GiB for vLLM (measured) + the LMCache RAM tier you choose (48 GiB in the compose file; 8–16 GiB is plenty for a few sessions) + OS.
+  **Estimated minimum ~96–112 GiB, recommended 128 GiB; we only ever ran it on 246 GiB**, where the spare RAM acts as page cache for the Engram tables.
+  Breakdown and reasoning: [`docs/TUNING.md`](docs/TUNING.md#host-ram-requirements).
 - Linux (tested: Ubuntu 26.04), Docker with the NVIDIA container toolkit, `hf` CLI. About 500 GiB of disk: 322 GiB model, ~36 GB of Docker images,
   up to 128 GiB of cache; a fast NVMe for the model directory and the cache directory.
 - A CPU with AVX-512 (F/BW/VNNI/VBMI/VBMI2) for the optional CPU host-expert runtime; ≥180 GB/s read bandwidth is the recipe's threshold.

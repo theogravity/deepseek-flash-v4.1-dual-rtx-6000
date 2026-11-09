@@ -119,4 +119,7 @@ prompts, ~73 s for ~90k, ~73–103 s for 380–420k-token prompts (queueing behi
 
 Stock recipe on this 246 GiB host, first boot: the kernel logged a global OOM (`constraint=CONSTRAINT_NONE`) and killed a `VLLM::Worker_TP`
 holding ~35 GB anonymous and ~75 GB shared/pinned memory, about a minute into loading, with the container at ~213 GiB. With the Engram patch the
-container sits at ~90 GiB (plus the LMCache RAM tier) and loading completes in ~4–5 minutes.
+the vLLM workers hold ~77 GiB of non-reclaimable memory (plus the LMCache RAM tier) and loading completes in ~4–5 minutes.
+
+Measured memory of the running server (LMCache RAM tier 48 GiB): cgroup anonymous memory 124.5 GiB (LMCache server 49.0 GiB, two vLLM workers 37.3 GiB each, API server
+and engine ~2.5 GiB) and 98.9 GiB of reclaimable page cache; host `free`: 138 GiB used, 108 GiB available.
