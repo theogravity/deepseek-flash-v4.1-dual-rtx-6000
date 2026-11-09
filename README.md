@@ -57,6 +57,8 @@ Threadripper PRO 9965WX (24 cores), 8×32 GiB DDR5-5600, two RTX PRO 6000 (96 GB
 | Quality (recipe's own suite) | GSM8K-200 98.5 %, HumanEval-164 96.3 % (matches upstream's published GPU-only numbers), needles to 448k, tools, images |
 | 20-minute soak, six workers | 105 requests, 0 errors, no VRAM drift |
 
+![Qwen 3.8 Flash Next NVFP4 (xhigh) vs DeepSeek 4.1 Flash EXL3 (max), side by side](docs/images/qwen-vs-deepseek.png)
+
 ## Requirements
 
 - Two RTX PRO 6000 Blackwell Workstation (sm_120, 96 GB each) with working peer-to-peer between them, and a CUDA 13-capable driver (tested 615.71.09). Other cards are untested.
