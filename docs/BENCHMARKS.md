@@ -28,14 +28,30 @@ numbers appear below and should not be mixed: **TTFT** (`bench/lmc_ask.py`, time
 **total request time** (`bench/long_prefill.py`, which also includes the model's short reasoning and answer, a few seconds). Single runs vary by about ±15%
 (Engram rows touched, cache state), so read the differences below as approximate.
 
-**Cold prefill, concurrency 1, final configuration** (chunk 8192, KV 11 GiB, LMCache on, CPU experts for decode only), TTFT:
+**Cold prefill, concurrency 1, final configuration** (chunk 8192, KV 11 GiB, LMCache on, CPU experts for decode only, recipe update of 2026-11-09 partly adopted, see below), TTFT:
 
 | Prompt | Cold TTFT | Prefill rate |
 |---|---|---|
-| 15,826 tokens | 3.0 s | ~5.3k tok/s (fixed per-request overhead dominates) |
-| 60,046 tokens | 6.8 s | ~8.8k tok/s |
-| 195,600 tokens | 18.6 s | ~10.5k tok/s |
-| 505,214 tokens | 44.7 s | ~11.3k tok/s |
+| 15,826 tokens | 1.4 s | ~11.6k tok/s |
+| 60,046 tokens | 5.0 s | ~12.0k tok/s |
+| 195,600 tokens | 15.7 s | ~12.5k tok/s |
+| 505,214 tokens | 41.6 s | ~12.1k tok/s |
+
+(Before adopting the update's layer skip and tokenizer memo the same setup measured 1.5 / 5.5 / 16.8 / 44.3 s on the same day, and 3.0 / 6.8 / 18.6 / 44.7 s in the first, less warmed-up run.)
+
+**Recipe update of 2026-11-09 (HF commit 2205b25), ablation** (cold TTFT, new seed each, warmed server):
+
+| Configuration | 16k | 60k | 196k | 505k |
+|---|---|---|---|---|
+| before the update | 1.50 s | 5.46 s | 16.83 s | 44.25 s |
+| full update (thread isolation + fixed MXFP8 tile + layer skip + memo) | 1.36 s | 5.10 s | 17.2 s | 47.8 s |
+| minus the fixed tile | 1.41 s | 5.25 s | 16.86 s | 47.1 s |
+| **layer skip + memo only (used)** | 1.36 s | 5.00 s | 15.66 s | **41.6 s** |
+
+Thread isolation moves the workers off the CPU pool cores, which squeezes the 32-thread NVMe Engram gather (our patch), and costs ~8% at 505k; the fixed tile is tuned upstream for chunk 16384
+and was ~2% slower at 8192. A single 498k request takes 41-42 s total instead of ~58 s. Decode (warm, 1 / 4 / 6 streams) 274 / 508 / 541 vs 255 / 481 / 562 tok/s: neutral. Quality unchanged
+(GSM8K-200 197, HumanEval-164 158, sweep 11/11, tools, images, needles). Peak VRAM, single 498k prefill: 95,958 MiB (1.9 GiB under the 97,887 limit); six concurrent 404k requests: 96,540 MiB (1.3 GiB).
+The 20-minute soak was not re-run after the update.
 
 For reference, the model card reports ~11.2–11.5k tok/s for a fresh ~40k-token prefill on Diffbot's own 2-GPU build. The recipe's needle script (a repeated sentence,
 so highly cacheable and not comparable to the numbers above) read 14.0k tok/s at 100k tokens, 16.6k at 249k and 17.4k at 448k.
@@ -62,7 +78,7 @@ total-time runs on the same configuration, which is the ±15% noise at work.
 | LMCache on, KV 6.5 GiB, steady state | 109 s (1,009,950 tokens, TTFT) |
 
 **Concurrent cold prefill** (six requests of ~404k tokens each, 2.42M tokens total): 178 s (13.6k tok/s aggregate) at chunk 16384, KV 8.5 GiB; **265 s (9.1k tok/s
-aggregate)** in the final configuration. Six concurrent ~60k-token requests: 43.9 s of wall time on the GPU-only path (including a 700-token answer each). A 1M-token request plus five ~100k-token ones in parallel
+aggregate)** before the 2026-11-09 recipe update and **197 s (12.3k tok/s)** after adopting its layer skip (repeats 2 s). Six concurrent ~60k-token requests: 43.9 s of wall time on the GPU-only path (including a 700-token answer each). A 1M-token request plus five ~100k-token ones in parallel
 finished in 157–194 s of wall time with no failures.
 
 **Prefill on the CPU pools** (`EXL3_CPU_EXPERTS_PREFILL=1`) was slower: 16k prefill 7.0–8.7k vs 10.3k tok/s, 60k prefill 9.5–10.3k vs 12.2–12.5k tok/s, six concurrent 60k

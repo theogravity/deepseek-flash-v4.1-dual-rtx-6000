@@ -74,6 +74,8 @@ It only adds `lmcache==0.5.7` (with `--no-deps`, so the recipe's torch/NCCL/vLLM
 
 ## 6. Check the patches match your image
 
+The compose file also mounts three files from the recipe's `recipe/patches/vllm/` (the 2026-11-09 update, HF commit 2205b25); if `ls $R/patches/vllm/deepseek_v41_memo.py` is missing, re-run the `hf download` from step 2.
+
 The mounted patches were generated against the image the recipe built on 2026-11-08. If your build used a newer recipe commit, regenerate them:
 [TUNING.md §2](TUNING.md#2-rebuild-from-scratch) has the three `docker run ... cat` commands and the two `apply_patch.py` invocations. Each patcher
 refuses to run if the code it patches has moved, so a stale patch cannot silently apply. Optional but recommended: run the model-free test

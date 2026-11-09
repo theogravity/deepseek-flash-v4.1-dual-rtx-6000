@@ -201,7 +201,20 @@ on `:8001/metrics` (no key needed), before and after a request, or run `bench/cl
 | Claude Code sessions recompute most of every prompt (per-turn prefix hits 13–29%, always exactly 6,144 reused tokens) | Inline `role:system` messages; fold them with `examples/litellm_fold_inline_system.py` (section 4b) and recreate LiteLLM. |
 | Benchmark numbers look 5–10× too good on a repeat run | Page cache (Engram rows, prompts) and prefix caches; use a fresh seed for every cold measurement. |
 
-## 6. Not done / ideas
+## 6. The recipe update of 2026-11-09 (what is on and what is off)
+
+Diffbot's HF commit `2205b25` ("CPU runtime about 6% faster on agentic work") adds three vLLM files and four changes that `serve.sh` enables with `CPU_EXPERTS=1`. This setup mounts
+the three files (`decoder_replay_layers_skip.py`, `model_state_skip.py`, `deepseek_v41_memo.py`; layers 20-39 are skipped on placeholder chunks, and tokenizer renders are memoised) and keeps
+two of the update's switches **off**, because the ablation in [BENCHMARKS.md](BENCHMARKS.md#prefill) showed them hurting here:
+
+- `EXL3_CPU_EXPERTS_ISOLATE=0`: isolation pins workers away from the CPU pool cores and squeezes our NVMe Engram gather thread pool (505k prefill +8%).
+- `DS41_MXFP8_TACTIC` left unset (fixed 128x128 CUTLASS tile): tuned for chunk 16384; ~2% slower at 8192.
+
+Net: prefill 6-9% faster, six concurrent 404k cold requests 265 s -> 197 s, decode and quality unchanged. Requires the recipe files at or past that commit: run the `hf download` again.
+A missing mounted file makes Docker create a directory at the path and the server fails to import. To roll back, delete the three mounts. The VRAM margin under six concurrent 404k prompts
+is 1.3 GiB (a little under the 1.4 GiB rule of thumb); lower `--kv-cache-memory` to ~10.5 GiB if you want it back.
+
+## 7. Not done / ideas
 
 - A host-expert plan built from your own routing statistics (`EXL3_EXPERT_STATS` + the recipe's `plans/make_plan.py`) could free VRAM for KV without
   hurting decode. Not needed here (the pool already holds six 400k sessions), so not attempted.

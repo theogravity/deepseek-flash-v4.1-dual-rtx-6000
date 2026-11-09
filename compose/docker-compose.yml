@@ -36,6 +36,11 @@ services:
       - ${CACHE_DIR:-${HOME}/.cache/dsv41-flash-exl3}:/root/.cache   # kernel JIT caches + LMCache disk tier
       - ${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}/recipe:/opt/recipe:ro
       - ${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}/recipe/patches/vllm/sitecustomize.py:/usr/lib/python3.12/sitecustomize.py:ro
+      # Files from the recipe's 2026-11-09 update (HF commit 2205b25; `hf download` again if these are missing - a bind mount of a missing file
+      # makes Docker create a directory). Layer skip on placeholder chunks + tokenizer render memo: prefill 6-9% faster. See docs/TUNING.md section 6.
+      - ${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}/recipe/patches/vllm/decoder_replay_layers_skip.py:/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v41/decoder_replay_layers.py:ro
+      - ${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}/recipe/patches/vllm/model_state_skip.py:/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v41/nvidia/model_state.py:ro
+      - ${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}/recipe/patches/vllm/deepseek_v41_memo.py:/usr/local/lib/python3.12/dist-packages/vllm/tokenizers/deepseek_v41.py:ro
       # Our patches, mounted over the image's stock files (regenerate with each apply_patch.py if the image changes):
       - ../patches/lmcache/start.sh:/opt/dsv41-lmcache/start.sh:ro
       - ../patches/api-auth/patched/authenticate.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/serve/middleware/authenticate.py:ro
@@ -113,6 +118,9 @@ services:
       EXL3_CPU_EXPERTS: "1"
       EXL3_CPU_EXPERTS_LIB: /opt/recipe/cpuexp/build
       EXL3_CPU_EXPERTS_PREFILL: "0"
+      # The 2026-11-09 recipe update turns thread isolation on by default; it squeezes the NVMe Engram gather pool (505k prefill ~8% slower), so it is off.
+      # The update's fixed MXFP8 tile (DS41_MXFP8_TACTIC) is also left unset: tuned for chunk 16384, ~2% slower at 8192.
+      EXL3_CPU_EXPERTS_ISOLATE: "0"
       # Chat encoding / DSML tool parsing patches baked into the image by the recipe.
       VLLM_DS41_REPLAY_FINAL_WINDOW: "1"
       VLLM_DS41_SEGMENT_ENCODE: "1"
