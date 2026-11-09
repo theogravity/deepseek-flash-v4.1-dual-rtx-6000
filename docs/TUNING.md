@@ -157,7 +157,7 @@ What that means in practice (`bench/prefix_demo.py`, 60k-token prompt, time to f
 
 For agents: keep the start of the prompt stable (system prompt, tool definitions, earlier turns) and only append; editing or inserting near the start recomputes everything after
 it, and compaction resets the prefix. The recipe strips Claude Code's `x-anthropic-billing-header` from system messages (`VLLM_DS41_API_SYSTEM_CLEAN=1`) so that header does not break the
-prefix between requests. We did not measure hit rates in a real agent session. To see whether a restore happened, look for `Retrieved N tokens` and `Prefetch request completed` in the LMCache
+prefix between requests. Hit rates in real Claude Code sessions were measured and are covered in the next subsection (inline system messages were the real problem, not that header). To see whether a restore happened, look for `Retrieved N tokens` and `Prefetch request completed` in the LMCache
 server log; vLLM's cumulative `External prefix cache hit rate` moved only a little in our tests, so it is not a reliable per-request signal.
 
 ### Claude Code and inline system messages (read this if you use Claude Code)
