@@ -1,25 +1,40 @@
 # DeepSeek V4.1 Flash on 2× RTX PRO 6000 (Blackwell)
 
 How to run [DeepSeek V4.1 Flash](https://huggingface.co/diffbot/DeepSeek-V4.1-Flash-EXL3-3bpw-2x-RTX-PRO-6000) (Diffbot's EXL3 3-bit
-pack) on **two RTX PRO 6000 Blackwell cards** (tested on a 246 GiB workstation; see the RAM requirements below), tuned for **up to 6 concurrent long-context agents**
-(512k max context, compaction at 400k), with an API key, a RAM + disk prompt cache and measured numbers.
+pack) on **two RTX PRO 6000 Blackwell cards**, tuned for **up to 6 concurrent long-context agents** (512k max context, compaction at 400k),
+with an API key, a RAM + disk prompt cache and measured numbers.
 
-This repo is the set of changes, patches, configuration and measurements we needed on top of Diffbot's recipe. It does **not**
-contain the model or the recipe; you download those from the Hugging Face repo above. Everything here was developed and measured on
-one machine, so treat the numbers as a reference point, not a guarantee.
+**Host RAM: about 77 GiB for vLLM (measured) plus the LMCache RAM tier you choose. Estimated minimum ~96–112 GiB, recommended 128 GiB; we only ever
+ran it on 246 GiB.** The stock recipe pins ~230 GiB and does not fit on a 246 GiB host. Breakdown and reasoning:
+[`docs/TUNING.md`](docs/TUNING.md#host-ram-requirements).
 
-## Why this exists
+**What we changed on top of Diffbot's recipe:**
 
-The upstream recipe pins about 230 GiB of host RAM (103 GiB of it is the two Engram lookup tables). On our 246 GiB host the stock
-recipe is killed by the kernel OOM killer while loading. Getting it to run, and then to run well for several agents at once, took four
-changes plus a lot of measuring:
+- **Engram tables served from NVMe** instead of pinned in RAM: the 103 GiB of lookup tables stay in the checkpoint shards and only the rows each step needs are read
+  (bit-exact with the stock kernel, works inside the decode CUDA graph). Pinned memory drops from ~230 GiB to ~77 GiB.
+- **32-thread gather for those reads** (vLLM sets torch to one thread when serving): prefill went from ~1–1.4k to ~10k tok/s.
+- **LMCache with RAM + disk tiers** (48 GiB / 128 GiB): a 1M-token prompt evicted from the GPU restores in ~2–3 s instead of ~109 s of prefill, and the disk tier survives restarts.
+  Entries are only ~1.8 KB per token, so a small RAM tier goes a long way.
+- **CPU host-experts for decode only:** decode +12–17% (prefill on the CPU pools measured 15–30% slower, so it stays off).
+- **Kept the 512-slot VRAM expert cache:** removing it to grow the KV pool made decode 2.3× slower with a 10-core-per-GPU CPU pool.
+- **512k window, 6 sequences, prefill chunk 8192:** a 2.77M-token fp8 KV pool (5.3× a full request, so six 400k sessions stay on the GPU). The smaller chunk frees ~3.2 GiB of
+  VRAM per card at the cost of ~10–20% single-stream cold-prefill speed; decode is unchanged.
+- **API key:** `--api-key` plus a small auth patch so clients that send `x-api-key` (LiteLLM's `anthropic/` provider) work; `/health` stays open for healthchecks.
+- **LMCache-compatible memory settings:** `expandable_segments` off, `SYS_PTRACE` + `seccomp=unconfined`, an LRU eviction block on the disk tier.
+- **Sandboxed validation:** the recipe's quality suite runs HumanEval programs in a no-network container instead of on the host.
 
-| Change | What it does | Where |
-|---|---|---|
-| **Engram tables on NVMe** | Keeps the 103 GiB of int4 Engram tables in the checkpoint shards and reads only the rows each step needs (bit-exact with the stock kernel, works inside the decode CUDA graph). The pinned memory drops from ~230 GiB to ~77 GiB (measured, vLLM workers). | [`patches/engram-nvme`](patches/engram-nvme) |
-| **LMCache, RAM + disk** | Prompt-cache tiers that restore a 1M-token prompt in ~2–3 s instead of 109 s of prefill, and survive restarts. | [`patches/lmcache`](patches/lmcache) |
-| **API key** | `--api-key` plus a small auth patch so clients that send `x-api-key` (LiteLLM's `anthropic/` provider) work. | [`patches/api-auth`](patches/api-auth) |
-| **Tuned serving config** | 512k window, 6 sequences, prefill chunk 8192, 2.77M-token KV pool, CPU host-experts for decode only. | [`compose/docker-compose.yml`](compose/docker-compose.yml) |
+This repo is the set of changes, patches, configuration and measurements we needed. It does **not** contain the model or the recipe; you download those from the
+Hugging Face repo above. Everything here was developed and measured on one machine, so treat the numbers as a reference point, not a guarantee.
+
+## Where each change lives
+
+| Change | Where |
+|---|---|
+| Engram tables on NVMe, 32-thread gather | [`patches/engram-nvme`](patches/engram-nvme) |
+| LMCache server launcher, derived image | [`patches/lmcache`](patches/lmcache) |
+| `x-api-key` support for the API key | [`patches/api-auth`](patches/api-auth) |
+| Serving config (window, sequences, chunk, KV pool, CPU experts, expert cache, memory settings) | [`compose/docker-compose.yml`](compose/docker-compose.yml) |
+| Measurements, sandboxed quality suite | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), [`bench/`](bench) |
 
 ## Results (our machine)
 
