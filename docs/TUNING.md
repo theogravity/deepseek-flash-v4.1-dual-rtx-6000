@@ -20,6 +20,8 @@ CUDA IPC). Port 8001 requires an API key.
 
 ## 2. Rebuild from scratch
 
+The full step-by-step version, with prerequisite checks and what a healthy boot looks like, is [INSTALL.md](INSTALL.md); this section is the condensed form.
+
 Run scripts by path from a directory other than the download (interpreters load code from the current directory).
 If a build script prints nothing and exits 0, check `echo $SHELLOPTS`: an exported `onecmd` option makes every child `bash` stop after
 its first line (use `env -u SHELLOPTS bash script.sh`).

@@ -39,15 +39,15 @@ Threadripper PRO 9965WX (24 cores), 8×32 GiB DDR5-5600, two RTX PRO 6000 (96 GB
 
 ## Requirements
 
-- Two RTX PRO 6000 Blackwell Workstation (sm_120, 96 GB each) with working peer-to-peer between them. Other cards are untested.
+- Two RTX PRO 6000 Blackwell Workstation (sm_120, 96 GB each) with working peer-to-peer between them, and a CUDA 13-capable driver (tested 615.71.09). Other cards are untested.
 - About 246 GiB of host RAM (this setup uses ~90 GiB + 48 GiB for the LMCache RAM tier). Less RAM works if you shrink the LMCache tier.
-- Linux, Docker with the NVIDIA container toolkit, `hf` CLI. ~330 GiB disk for the model plus ~130 GiB for caches; a fast NVMe for
-  the model directory and the cache directory.
+- Linux (tested: Ubuntu 26.04), Docker with the NVIDIA container toolkit, `hf` CLI. About 500 GiB of disk: 322 GiB model, ~36 GB of Docker images,
+  up to 128 GiB of cache; a fast NVMe for the model directory and the cache directory.
 - A CPU with AVX-512 (F/BW/VNNI/VBMI/VBMI2) for the optional CPU host-expert runtime; ≥180 GB/s read bandwidth is the recipe's threshold.
 
 ## Quick start
 
-Details, expected times and every knob are in [`docs/TUNING.md`](docs/TUNING.md).
+A fuller, step-by-step version with prerequisite checks, timings and what a healthy boot looks like is in [`docs/INSTALL.md`](docs/INSTALL.md); every knob and the troubleshooting table are in [`docs/TUNING.md`](docs/TUNING.md).
 
 ```bash
 # 1. model + recipe (upstream, not in this repo)
@@ -81,7 +81,7 @@ patches/
   lmcache/      LMCache server launcher (container entrypoint) and the derived-image script
   api-auth/     vLLM auth that also accepts x-api-key
 bench/          decode / prefill / concurrency / soak / interference / LMCache-restore scripts and the sandboxed quality suite
-docs/           TUNING.md (runbook, tuning table, troubleshooting) and BENCHMARKS.md (methodology and results)
+docs/           INSTALL.md (step-by-step install and build), TUNING.md (tuning table, troubleshooting), BENCHMARKS.md (methodology and results)
 examples/       LiteLLM model entry
 LICENSES/       third-party license texts
 ```
