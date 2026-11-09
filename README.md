@@ -4,6 +4,8 @@ How to run [DeepSeek V4.1 Flash](https://huggingface.co/diffbot/DeepSeek-V4.1-Fl
 pack) on **two RTX PRO 6000 Blackwell cards**, tuned for **up to 6 concurrent long-context agents** (512k max context, compaction at 400k),
 with an API key, a RAM + disk prompt cache and measured numbers.
 
+![Qwen 3.8 Flash Next NVFP4 (xhigh) vs DeepSeek 4.1 Flash EXL3 (max), side by side](docs/images/qwen-vs-deepseek.png)
+
 **Host RAM: about 77 GiB for vLLM (measured) plus the LMCache RAM tier you choose. Estimated minimum ~96–112 GiB, recommended 128 GiB; we only ever
 ran it on 246 GiB.** The stock recipe pins ~230 GiB and does not fit on a 246 GiB host. Breakdown and reasoning:
 [`docs/TUNING.md`](docs/TUNING.md#host-ram-requirements).
@@ -56,8 +58,6 @@ Threadripper PRO 9965WX (24 cores), 8×32 GiB DDR5-5600, two RTX PRO 6000 (96 GB
 | GPU KV pool | 2.77M tokens (5.3× a full 512k request) |
 | Quality (recipe's own suite) | GSM8K-200 98.5 %, HumanEval-164 96.3 % (matches upstream's published GPU-only numbers), needles to 448k, tools, images |
 | 20-minute soak, six workers | 105 requests, 0 errors, no VRAM drift |
-
-![Qwen 3.8 Flash Next NVFP4 (xhigh) vs DeepSeek 4.1 Flash EXL3 (max), side by side](docs/images/qwen-vs-deepseek.png)
 
 ## Requirements
 
