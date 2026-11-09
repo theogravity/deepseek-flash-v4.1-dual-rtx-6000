@@ -1,0 +1,174 @@
+# DeepSeek V4.1 Flash (EXL3 3-bit) on two RTX PRO 6000 Blackwell cards, tuned for up to 6 concurrent long-context agents:
+# 512k max context, prefill chunk 8192, 2.77M-token fp8 KV pool, CPU host-experts for decode, Engram tables served from
+# NVMe, LMCache RAM + disk tiers, API-key protected. Full rationale, measurements and a tuning table: ../docs/TUNING.md.
+#
+#   cp .env.example .env   # set API_KEY (and MODEL_DIR / CACHE_DIR / GPU_A / GPU_B if they differ from the defaults)
+#   docker compose up -d   # ~5 minutes to healthy; first boot also compiles kernels
+#
+# Prerequisites (see ../README.md): the checkpoint in MODEL_DIR, the recipe image built from its recipe/, the recipe's kernel
+# and cpuexp builds, and the derived LMCache image (patches/lmcache/build_image.sh).
+#
+# Memory budget on a 246 GiB host: container ~90 GiB + LMCache RAM tier 48 GiB; stock recipe needs ~230 GiB without the
+# Engram patch. mem_limit caps the container so a mistake kills it instead of the desktop.
+# VRAM: a 500k-token prefill peaks at ~95.9k of 97.9k MiB per card; do not raise --kv-cache-memory without re-measuring
+# (patches in ../bench: long_prefill.py).
+services:
+  deepseek-v41-flash:
+    image: dsv41-flash-1017-exl3-3bpw-sm120-lmcache
+    container_name: dsv41-flash-exl3
+    init: true
+    network_mode: host
+    ipc: host
+    mem_limit: 240g
+    memswap_limit: 240g
+    cap_add:
+      - IPC_LOCK     # pinned host memory
+      - SYS_PTRACE   # LMCache server opens vLLM's GPU memory with pidfd_getfd
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - ${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}:${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}:ro
+      - ${CACHE_DIR:-${HOME}/.cache/dsv41-flash-exl3}:/root/.cache   # kernel JIT caches + LMCache disk tier
+      - ${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}/recipe:/opt/recipe:ro
+      - ${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}/recipe/patches/vllm/sitecustomize.py:/usr/lib/python3.12/sitecustomize.py:ro
+      # Our patches, mounted over the image's stock files (regenerate with each apply_patch.py if the image changes):
+      - ../patches/lmcache/start.sh:/opt/dsv41-lmcache/start.sh:ro
+      - ../patches/api-auth/patched/authenticate.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/serve/middleware/authenticate.py:ro
+      - ../patches/engram-nvme/patched/engram.py:/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v41/common/engram.py:ro
+      - ../patches/engram-nvme/patched/ep_weight_filter.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/ep_weight_filter.py:ro
+    environment:
+      CUDA_VISIBLE_DEVICES: "0,1"
+      TORCH_CUDA_ARCH_LIST: "12.0a"
+      FLASHINFER_CUDA_ARCH_LIST: "12.0f"
+      FLASHINFER_DISABLE_VERSION_CHECK: "1"
+      VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+      NCCL_P2P_DISABLE: "0"
+      NCCL_CUMEM_ENABLE: "0"
+      NCCL_DEBUG: WARN
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      # NOTE: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (the recipe's default) is deliberately NOT set: LMCache shares the KV
+      # cache through CUDA IPC, which does not work on expandable-segment (VMM) memory. It costs ~1.5 GiB of allocator slack.
+      VLLM_PLUGINS: vllm_exl3
+      DSV41_ENGRAM_DISK: "0"
+      DSV41_ENGRAM_INT4: "1"
+      # Keep the two int4 Engram tables (103 GiB) in the checkpoint shards on NVMe instead of pinning them in host RAM
+      # (patches/engram-nvme). Bit-exact with the stock kernel.
+      DSV41_ENGRAM_NVME: "1"
+      # LMCache multiprocess server (started by start.sh beside vLLM): RAM tier + LRU-evicted disk tier under CACHE_DIR/lmcache.
+      DSV41_LMCACHE_L1_GB: "48"
+      DSV41_LMCACHE_L2_GB: "128"
+      VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: "0"
+      TILELANG_CACHE_DIR: /root/.cache/tilelang
+      TRITON_CACHE_DIR: /root/.cache/triton
+      # --- the recipe's serve/serve.sh defaults (PROFILE=2x), unchanged unless commented ---
+      XMOE_EXT: xmoe
+      EXL3_DO: "1"
+      EXL3_DO_MOD: xmoe_do_i8
+      # Host-expert plan: the coldest 5,296 experts stay in pinned host RAM; a 512-slot VRAM cache per GPU holds copies of the
+      # host experts decode used most. Do not drop the cache to grow KV (see docs/TUNING.md).
+      EXL3_HOST_EXPERTS: /opt/recipe/plans/plan-1017-agent30-c512.json
+      EXL3_HOST_CACHE: "512"
+      EXL3_HOST_CACHE_HOT: "1"
+      EXL3_HOST_OVERLAP_SMS: "32"
+      EXL3_HOST_OVERLAP_SMS_PREFILL: "64"
+      EXL3_HOST_OVERLAP_GROUP: "16"
+      EXL3_FAT_SLICE: "0"
+      EXL3_LEAN_PREP: "1"
+      EXL3_FUSED_PREP: "1"
+      EXL3_PREP_IO: "1"
+      DS41_MHC_SPLITS: "80"
+      DS41_DENSE_GEMV: "1"
+      DS41_ROUTER_SPLITK: "1"
+      DS41_DENSE_ONE_COPY: "1"
+      DS41_DENSE_GEMV_MAX: "64"
+      DS41_DENSE_MBLOCK: "64"
+      DS41_DENSE_PY: /opt/recipe/kernels/sm120_dense2.py
+      DS41_DENSE_TABLE: /opt/recipe/kernels/sm120_dense_table_v2.json
+      DS41_WOA_FP8: "1"
+      DS41_WOA_ACTQ: "32"
+      DS41_WOA_ACTQ_TRITON: "1"
+      DS41_EMBED_HOST: "1"
+      DS41_INDEXER_BUF_MULT: "8"
+      DS41_INDEXER_EXPAND_CAP: "1"
+      DS41_ROPE_CAP: "1"
+      DS41_FP8_LMHEAD: "1"
+      DS41_FUSE_ROUTER: "1"
+      DS41_FUSE_HCPREP: "1"
+      DS41_FUSE_IDX: "1"
+      DS41_FUSE_OPROJ: "1"
+      DS41_CAR: "1"
+      DS41_CAR_PCIE_IPC: "1"
+      # Lossy prefill options shipped by the recipe (8-bit all-reduce, int8 decode-once kernel); set DS41_FP8AR=0 and
+      # EXL3_DO_MOD=xmoe_do for exact prefill.
+      DS41_FP8AR: "1"
+      DS41_ROWTOPK: "1"
+      DENSE_HYBRID_M: "128"
+      # CPU host-expert runtime (built by the recipe's cpuexp/build.sh for THIS cpu): DECODE only. CPU prefill measured 15-30% slower.
+      EXL3_CPU_EXPERTS: "1"
+      EXL3_CPU_EXPERTS_LIB: /opt/recipe/cpuexp/build
+      EXL3_CPU_EXPERTS_PREFILL: "0"
+      # Chat encoding / DSML tool parsing patches baked into the image by the recipe.
+      VLLM_DS41_REPLAY_FINAL_WINDOW: "1"
+      VLLM_DS41_SEGMENT_ENCODE: "1"
+      VLLM_DS41_EFFORT_ALIASES: "1"
+      VLLM_DS41_API_TOOLS: "1"
+      VLLM_DS41_API_SYSTEM: "1"
+      VLLM_DS41_API_SYSTEM_CLEAN: "1"
+      VLLM_DS41_DEVELOPER_AS_SYSTEM: "1"
+      VLLM_DS41_RESPONSE_FORMAT: "1"
+      VLLM_DS41_TOOL_CHOICE_NONE: "1"
+      VLLM_DS41_SYSTEM_TURN: "1"
+      VLLM_DS41_DSML_STRICT: "1"
+      VLLM_DS41_NAMESPACES: "1"
+      VLLM_DS41_THINKING_PRECEDENCE: "1"
+    entrypoint: ["/opt/dsv41-lmcache/start.sh"]
+    # Differences from the recipe's serve.sh: 512k window (recipe 1M), 6 sequences (recipe 8), prefill chunk 8192 (recipe 16384),
+    # KV 11 GiB per GPU (recipe 4.25), --api-key, --enable-prefix-caching is vLLM's default, no warmup loop (first requests
+    # after boot compile remaining kernels and are slow).
+    command: >-
+      serve ${MODEL_DIR:-/mnt/models/dsv41-flash-exl3}
+      --tensor-parallel-size 2
+      --host 0.0.0.0
+      --port 8001
+      --api-key ${API_KEY:?set API_KEY in compose/.env (an empty key would leave the server unauthenticated)}
+      --max-model-len 524288
+      --kv-cache-dtype fp8
+      --kv-cache-memory 11811160064
+      --gpu-memory-utilization 0.92
+      --max-num-seqs 6
+      --max-num-batched-tokens 8192
+      --kernel-config '{"enable_flashinfer_autotune":false,"enable_jit_warmup":false}'
+      --block-size 64
+      --quantization exl3
+      --tokenizer-mode deepseek_v41
+      --tool-call-parser deepseek_v41
+      --enable-auto-tool-choice
+      --reasoning-parser deepseek_v41
+      --served-model-name "DeepSeek V4.1 Flash"
+      --trust-remote-code
+      --disable-custom-all-reduce
+      --linear-backend marlin
+      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","custom_ops":["all"],"cudagraph_decoder_replay":false}'
+      --cudagraph-capture-sizes 1 2 4 6 8 12 16 24 32 36
+      --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic"}'
+      --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_A:-0}", "${GPU_B:-1}"]
+              capabilities: [gpu]
+    stop_grace_period: 240s
+    restart: "no"   # a crash loop leaks /dev/shm files
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]   # /health is not API-key protected
+      interval: 15s
+      timeout: 30s
+      retries: 20
+      start_period: 3600s

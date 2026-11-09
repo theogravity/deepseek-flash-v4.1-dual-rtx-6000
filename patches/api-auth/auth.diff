@@ -1,0 +1,36 @@
+--- stock/authenticate.py
++++ patched/authenticate.py
+@@ -28,19 +28,23 @@
+         self.api_tokens = [hashlib.sha256(t.encode("utf-8")).digest() for t in tokens]
+ 
+     def verify_token(self, headers: Headers) -> bool:
++        # Patched (patches/api-auth): also accept the Anthropic-style `x-api-key` header, which LiteLLM's
++        # anthropic/ provider sends, in addition to `Authorization: Bearer <key>`.
++        candidates = []
+         authorization_header_value = headers.get("Authorization")
+-        if not authorization_header_value:
+-            return False
+-
+-        scheme, _, param = authorization_header_value.partition(" ")
+-        if scheme.lower() != "bearer":
+-            return False
+-
+-        param_hash = hashlib.sha256(param.encode("utf-8")).digest()
++        if authorization_header_value:
++            scheme, _, param = authorization_header_value.partition(" ")
++            if scheme.lower() == "bearer":
++                candidates.append(param)
++        x_api_key = headers.get("x-api-key")
++        if x_api_key:
++            candidates.append(x_api_key)
+ 
+         token_match = False
+-        for token_hash in self.api_tokens:
+-            token_match |= secrets.compare_digest(param_hash, token_hash)
++        for candidate in candidates:
++            param_hash = hashlib.sha256(candidate.encode("utf-8")).digest()
++            for token_hash in self.api_tokens:
++                token_match |= secrets.compare_digest(param_hash, token_hash)
+ 
+         return token_match
+ 

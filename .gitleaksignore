@@ -1,0 +1,3 @@
+# False positive: one line of vLLM's own stock engram.py, kept verbatim in the patched copy (a peer-slot size computed from a constant whose name the
+# generic-api-key rule mistakes for a key). The fingerprint includes the line number; if apply_patch.py regenerates the file and the line moves, re-check.
+patches/engram-nvme/patched/engram.py:generic-api-key:1744

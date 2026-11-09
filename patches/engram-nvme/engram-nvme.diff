@@ -1,0 +1,320 @@
+--- stock/engram.py
++++ patched/engram.py
+@@ -997,6 +997,217 @@
+         )
+ 
+ 
++# DSV41_ENGRAM_NVME=1: serve the int4 Engram tables straight from the checkpoint
++# shards (mmap, never pinned) instead of holding them in pinned host RAM.
++#
++# CUDA-graph friendly: decode runs as one FULL graph, so nothing here may sync the host.
++# A lookup is  D2H ids -> pinned | host node: gather rows from NVMe into pinned staging |
++# H2D staging -> GPU | the stock int4 kernel on that compact table.  All shapes and kernel
++# arguments depend only on the token count, so graphs capture and replay it unchanged.
++_ENGRAM_NVME = os.environ.get("DSV41_ENGRAM_NVME", "0") == "1"
++# Up to this many unique rows per lookup get one WILLNEED hint each so the NVMe sees a deep
++# queue; bigger batches are gathered by _NVME_THREADS threads faulting in parallel.
++_NVME_WILLNEED_MAX_ROWS = int(os.environ.get("DSV41_ENGRAM_NVME_WILLNEED_MAX", "1024"))
++_NVME_THREADS = int(os.environ.get("DSV41_ENGRAM_NVME_THREADS", "32"))
++
++_HOSTFN = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
++_HOST_SLOTS: list = [None]  # slot 0 unused: ctypes hands a NULL void* to Python as None
++_CUDART = None
++
++
++def _host_trampoline(slot):
++    try:
++        _HOST_SLOTS[slot]()
++    except BaseException:
++        import sys
++        import traceback
++
++        traceback.print_exc()
++        sys.stderr.flush()
++        # Stale staging rows would silently corrupt generations; die loudly instead.
++        os._exit(70)
++
++
++_HOST_TRAMPOLINE = _HOSTFN(_host_trampoline)
++
++
++def _launch_host_slot(slot: int) -> None:
++    """Enqueue (or, under stream capture, add a graph host node for) _HOST_SLOTS[slot]."""
++    global _CUDART
++    if _CUDART is None:
++        lib = None
++        for name in ("libcudart.so.13", "libcudart.so.12", "libcudart.so"):
++            try:
++                lib = ctypes.CDLL(name)
++                break
++            except OSError:
++                continue
++        if lib is None:
++            raise RuntimeError("libcudart not found (needed for cudaLaunchHostFunc)")
++        lib.cudaLaunchHostFunc.argtypes = [ctypes.c_void_p, _HOSTFN, ctypes.c_void_p]
++        lib.cudaLaunchHostFunc.restype = ctypes.c_int
++        _CUDART = lib
++    err = _CUDART.cudaLaunchHostFunc(
++        torch.cuda.current_stream().cuda_stream, _HOST_TRAMPOLINE, slot
++    )
++    if err != 0:
++        raise RuntimeError(f"cudaLaunchHostFunc failed with CUDA error {err}")
++
++
++class _NvmeEngramTable:
++    """One layer's int4 Engram table, read row-wise from its safetensors shards."""
++
++    def __init__(
++        self,
++        model_dir: str,
++        layer_id: int,
++        dim: int,
++        block_size: int,
++        *,
++        max_tokens: int,
++        local_heads: int,
++        total_heads: int,
++        device: torch.device,
++    ) -> None:
++        import json
++
++        with open(os.path.join(model_dir, "model.safetensors.index.json"), encoding="utf-8") as fh:
++            weight_map = json.load(fh)["weight_map"]
++        self.dim = dim
++        self.sb = dim // block_size
++        self._keep: list = []
++        self.w_fd, self.w_base, self.w = self._map(
++            model_dir, weight_map, f"layers.{layer_id}.engram.embed.weight", np.uint8, (dim // 2,)
++        )
++        self.s_fd, self.s_base, self.s = self._map(
++            model_dir, weight_map, f"layers.{layer_id}.engram.embed.scale", np.float16, (self.sb,)
++        )
++        assert self.w.shape[0] == self.s.shape[0], "engram weight/scale row counts differ"
++        self.num_rows = self.w.shape[0]
++        # Fixed-address staging, so captured graphs keep reading/writing the same memory.
++        # vLLM sets a CUDA default device during model init, so CPU buffers must say so.
++        cap = max_tokens * local_heads
++        self.max_tokens = max_tokens
++        self.ids_pin = torch.zeros((max_tokens, local_heads), dtype=torch.int64, device="cpu").pin_memory()
++        self.cid_pin = torch.full((max_tokens, total_heads), -1, dtype=torch.int64, device="cpu").pin_memory()
++        self.w_pin = torch.zeros((cap, dim // 2), dtype=torch.uint8, device="cpu").pin_memory()
++        self.s_pin = torch.zeros((cap, self.sb), dtype=torch.float16, device="cpu").pin_memory()
++        self.cid_gpu = torch.full((max_tokens, total_heads), -1, dtype=torch.int64, device=device)
++        self.w_gpu = torch.zeros((cap, dim // 2), dtype=torch.uint8, device=device)
++        self.s_gpu = torch.zeros((cap, self.sb), dtype=torch.float16, device=device)
++        self._slots: dict = {}
++        self._pool = None
++
++    def _map(self, model_dir, weight_map, tname, np_dtype, row_shape):
++        import json
++        import struct
++        import warnings
++
++        path = os.path.join(model_dir, weight_map[tname])
++        with open(path, "rb") as fh:
++            (n,) = struct.unpack("<Q", fh.read(8))
++            meta = json.loads(fh.read(n))[tname]
++        shape = tuple(meta["shape"])
++        assert shape[1:] == row_shape, f"{tname}: row shape {shape[1:]} != {row_shape}"
++        base = 8 + n + meta["data_offsets"][0]
++        fd = os.open(path, os.O_RDONLY)
++        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_RANDOM)
++        mapping = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
++        mapping.madvise(mmap.MADV_RANDOM)
++        arr = np.frombuffer(mapping, dtype=np_dtype, count=int(np.prod(shape)), offset=base).reshape(shape)
++        with warnings.catch_warnings():
++            warnings.simplefilter("ignore")  # read-only mapping; we only ever read
++            tensor = torch.from_numpy(arr)
++        self._keep.append(mapping)
++        return fd, base, tensor
++
++    def _gather_slice(self, rows: torch.Tensor, lo: int, hi: int) -> None:
++        part = rows[lo:hi]
++        torch.index_select(self.w, 0, part, out=self.w_pin[lo:hi])
++        torch.index_select(self.s, 0, part, out=self.s_pin[lo:hi])
++
++    def _gather_into(self, rows: torch.Tensor) -> None:
++        """rows: [U] int64 global row ids -> w_pin[:U], s_pin[:U] (host thread, no CUDA calls).
++
++        vLLM drops torch's intra-op threads to 1 for serving, which would leave this a
++        queue-depth-1 page-fault loop, so big gathers are split over our own threads
++        (torch releases the GIL inside index_select)."""
++        n = rows.numel()
++        if n <= _NVME_WILLNEED_MAX_ROWS:
++            wb, sb = self.dim // 2, self.sb * 2
++            for r in rows.tolist():
++                os.posix_fadvise(self.w_fd, self.w_base + r * wb, wb, os.POSIX_FADV_WILLNEED)
++                os.posix_fadvise(self.s_fd, self.s_base + r * sb, sb, os.POSIX_FADV_WILLNEED)
++            self._gather_slice(rows, 0, n)
++            return
++        if self._pool is None:
++            from concurrent.futures import ThreadPoolExecutor
++
++            self._pool = ThreadPoolExecutor(max_workers=_NVME_THREADS, thread_name_prefix="engram-nvme")
++        step = -(-n // _NVME_THREADS)
++        futures = [self._pool.submit(self._gather_slice, rows, lo, min(lo + step, n)) for lo in range(0, n, step)]
++        for future in futures:
++            future.result()
++
++    def _host_gather(self, t, head_start, end, local_heads, vocab_start, vocab_end) -> None:
++        """Runs on a CUDA host-function thread: ids_pin[:t] -> cid_pin[:t], w_pin, s_pin."""
++        flat = self.ids_pin[:t].reshape(-1)
++        owned = (flat >= vocab_start) & (flat < vocab_end)
++        uniq, inv = torch.unique(flat[owned], return_inverse=True)
++        comp = torch.full_like(flat, -1)
++        comp[owned] = inv
++        cid = self.cid_pin[:t]
++        cid.fill_(-1)
++        cid[:, head_start:end] = comp.view(t, local_heads)[:, : end - head_start]
++        if uniq.numel():
++            self._gather_into(uniq)
++
++    def _slot(self, key) -> int:
++        slot = self._slots.get(key)
++        if slot is None:
++            _HOST_SLOTS.append(lambda: self._host_gather(*key))
++            slot = self._slots[key] = len(_HOST_SLOTS) - 1
++        return slot
++
++    def lookup(
++        self,
++        indices: torch.Tensor,
++        out: torch.Tensor,
++        *,
++        head_start: int,
++        local_heads: int,
++        total_heads: int,
++        vocab_start: int,
++        vocab_end: int,
++        quant_block: int,
++        num_sms: int,
++        background: bool = False,
++    ) -> None:
++        """Same contract as ParallelEngramEmbedding.lookup for the int4 kernel:
++        out[token * local_heads + h] = dequant(row ids[token, head_start + h]), or zeros
++        when that id is padding or belongs to another rank's rows."""
++        t = indices.shape[0]
++        assert t <= self.max_tokens, f"engram lookup of {t} tokens > staging {self.max_tokens}"
++        end = min(head_start + local_heads, total_heads)
++        ids = indices[:, head_start:end].to(torch.int64)
++        if ids.shape[1] < local_heads:
++            ids = nn.functional.pad(ids, (0, local_heads - ids.shape[1]), value=-1)
++        self.ids_pin[:t].copy_(ids, non_blocking=True)
++        _launch_host_slot(self._slot((t, head_start, end, local_heads, vocab_start, vocab_end)))
++        n_rows = t * local_heads
++        self.w_gpu[:n_rows].copy_(self.w_pin[:n_rows], non_blocking=True)
++        self.s_gpu[:n_rows].copy_(self.s_pin[:n_rows], non_blocking=True)
++        self.cid_gpu[:t].copy_(self.cid_pin[:t], non_blocking=True)
++        grid = min(triton.cdiv(n_rows, 16), num_sms // 2 if background else num_sms)
++        # Compact ids are -1 (unowned / padding) or < n_rows, so (0, n_rows) is a static bound.
++        _engram_lookup_int4_kernel[(grid,)](
++            self.w_gpu, self.s_gpu, self.cid_gpu, out, 0, n_rows, n_rows,
++            self.cid_gpu.stride(0), self.cid_gpu.stride(1),
++            HEAD_START=head_start, LOCAL_HEADS=local_heads, TOTAL_HEADS=total_heads,
++            DIM=self.dim, QUANT_BLOCK=quant_block, BLOCK_R=16, GRID=grid,
++        )
++
++
+ class ParallelEngramEmbedding(nn.Module):
+     """Hash heads with FP8 rows and per-block E8M0 scales.
+ 
+@@ -1007,6 +1218,7 @@
+     _weight_loader = staticmethod(_engram_head_shard_weight_loader)
+     _shared_memory: DPSharedEngramStorage | None = None
+     _packed: torch.Tensor | None = None
++    _nvme: "_NvmeEngramTable | None" = None
+ 
+     def __init__(
+         self,
+@@ -1017,6 +1229,7 @@
+         cpu_offload: bool = False,
+         dp_shared_memory: bool = False,
+         use_thp: bool = False,
++        nvme_source: tuple[str, int] | None = None,
+     ) -> None:
+         super().__init__()
+         assert head_sizes and all(size > 0 for size in head_sizes)
+@@ -1061,6 +1274,31 @@
+             torch.accelerator.current_device_index()
+         ).multi_processor_count
+         self.int4 = _ENGRAM_INT4   # packed int4 rows + fp16 per-block scales (convert_engram_int4.py)
++        if nvme_source is not None:
++            assert self.int4 and cpu_offload and self.dp_size == 1, (
++                'DSV41_ENGRAM_NVME needs DSV41_ENGRAM_INT4=1, Engram cpu_offload and no Engram DP'
++            )
++            self._nvme = _NvmeEngramTable(
++                nvme_source[0], nvme_source[1], dim, block_size,
++                max_tokens=get_current_vllm_config().scheduler_config.max_num_batched_tokens,
++                local_heads=self.part_n_hash_cols, total_heads=self.n_hash_cols,
++                device=torch.device('cuda', torch.cuda.current_device()),
++            )
++            assert self.vocab_end_idx <= self._nvme.num_rows, (
++                f'engram rows {self.vocab_end_idx} > checkpoint rows {self._nvme.num_rows}'
++            )
++            # Placeholders as buffers: nothing for the weight loader to fill or to report missing.
++            self.register_buffer('weight', torch.zeros(1, dim // 2, dtype=torch.uint8), persistent=False)
++            self.register_buffer(
++                'weight_scale_inv', torch.zeros(1, dim // block_size, dtype=torch.float16), persistent=False
++            )
++            logger.info(
++                'Engram table served from NVMe (layer %d, %d rows x %d, %.2f GiB stays on disk; rows %d..%d are ours)',
++                nvme_source[1], self._nvme.num_rows, dim,
++                self._nvme.num_rows * (dim // 2 + 2 * (dim // block_size)) / 1024**3,
++                self.vocab_start_idx, self.vocab_end_idx,
++            )
++            return
+         weight, scales = self._allocate_weights()
+         self.weight = nn.Parameter(weight, requires_grad=False)
+         self.weight_scale_inv = nn.Parameter(scales, requires_grad=False)
+@@ -1183,6 +1421,14 @@
+         rows = indices.shape[0] * self.part_n_hash_cols
+         if not rows:
+             return
++        if self._nvme is not None:
++            self._nvme.lookup(
++                indices, out, head_start=self.head_start, local_heads=self.part_n_hash_cols,
++                total_heads=self.n_hash_cols, vocab_start=self.vocab_start_idx,
++                vocab_end=self.vocab_end_idx, quant_block=self.block_size,
++                num_sms=self._num_sms, background=background,
++            )
++            return
+         weight, scales = self._storage()
+         ids_stride_t, ids_stride_h = indices.stride()
+         sort_min_rows, _ = _engram_lookup_thresholds(indices.device)
+@@ -1661,6 +1907,10 @@
+             cpu_offload=engram_config.cpu_offload,
+             dp_shared_memory=bool(engram_config.dp_shared_memory),
+             use_thp=engram_config.use_thp,
++            nvme_source=(
++                get_current_vllm_config().model_config.model,
++                layout.layer_ids[layer_hash_index],
++            ) if _ENGRAM_NVME else None,
+         )
+ 
+     def _init_staging(self, max_tokens: int, head_dim: int) -> None:
+--- stock/ep_weight_filter.py
++++ patched/ep_weight_filter.py
+@@ -65,12 +65,23 @@
+         raise ValueError(f"Unknown expert placement strategy: {placement}")
+ 
+ 
++import os as _os_nvme
++
++# DSV41_ENGRAM_NVME=1: the Engram tables are read from the shards on demand
++# (see models/deepseek_v41/common/engram.py), so never load them into host RAM.
++_ENGRAM_NVME_SKIP = _os_nvme.environ.get("DSV41_ENGRAM_NVME", "0") == "1"
++
++
+ def should_skip_weight(
+     weight_name: str,
+     local_expert_ids: set[int] | None,
+ ) -> bool:
+     """Return ``True`` if *weight_name* is an expert weight that does not
+     belong to the local rank and should be skipped during loading."""
++    if _ENGRAM_NVME_SKIP and weight_name.endswith(
++        (".engram.embed.weight", ".engram.embed.scale")
++    ):
++        return True
+     if local_expert_ids is None:
+         return False
+     eid = parse_expert_id(weight_name)

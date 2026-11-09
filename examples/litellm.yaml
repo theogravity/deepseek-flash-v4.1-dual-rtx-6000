@@ -1,0 +1,20 @@
+# LiteLLM model entry for this server (optional: any OpenAI/Anthropic-compatible client can talk to :8001 directly with the key).
+#
+# Keep the `anthropic/` prefix: with a `hosted_vllm/` or `openai/` prefix LiteLLM drops thinking blocks ("Content block is not a thinking block").
+# The anthropic provider sends the key as `x-api-key`, which stock vLLM rejects; patches/api-auth makes vLLM accept it.
+# `os.environ/API_KEY` is resolved from LiteLLM's own environment, so the key is not written into this file.
+# Cost = OpenRouter's listing for deepseek/deepseek-v4.1-flash (2026-11-09): $0.051/M input, $0.567/M output, $0.018/M cache-read.
+model_list:
+  - model_name: DeepSeek V4.1 Flash
+    litellm_params:
+      model: anthropic/DeepSeek V4.1 Flash        # the server's --served-model-name
+      api_base: http://host.docker.internal:8001  # or http://localhost:8001 when LiteLLM runs on the host
+      api_key: os.environ/API_KEY
+      input_cost_per_token: 5.1e-08
+      output_cost_per_token: 5.67e-07
+      cache_read_input_token_cost: 1.8e-08
+    model_info:
+      mode: chat
+      supports_reasoning: true
+      supports_vision: true
+      supports_function_calling: true
