@@ -140,6 +140,44 @@ B is a near-complete hit, C reuses the first half and recomputes the rest, and D
 the Engram rows for the unchanged text were already in the OS page cache from A (this is our interpretation; the ~3.6 s difference is consistent with the 0.4–0.5 s per layer per
 16k chunk gather cost measured below). How the caches work and what follows for agent prompts: [TUNING.md §4b](TUNING.md#4b-caching-what-is-reused-and-what-is-not).
 
+## Prefix-cache hit rate in real Claude Code sessions
+
+`bench/claude_code_cache.py` runs real `claude -p` turns (Claude Code 2.1.296, read-only tools, no MCP servers) through LiteLLM into this server and reads vLLM's
+`prompt_tokens_by_source_total` counters around each turn. One conversation resumed turn by turn, then a brand-new session in the same directory (so it shares the system prompt and tool
+list). Tasks differ between the two runs, so only the percentages are comparable.
+
+| Turn | Before the fix: prompt tokens, prefix-cache hits | After the fix: prompt tokens, prefix-cache hits |
+|---|---|---|
+| 1.1 read a doc section (new content; 2 requests) | 45,739 — 6,144 (13.4%) | 44,567 — 21,376 (48.0%) |
+| 1.2 read another file (3–4 requests) | 79,378 — 18,560 (23.4%) | 113,374 — 107,392 (**94.7%**) |
+| 1.3 search | 55,338 — 12,544 (22.7%) | 63,340 — 63,104 (**99.6%**) |
+| 1.4 no tools | 28,750 — 6,272 (21.8%) | 31,903 — 31,744 (**99.5%**) |
+| 2.1 brand-new session | 40,879 — 25,984 (63.6%) | 41,403 — 35,072 (84.7%) |
+| 2.2 resume | 21,000 — 6,144 (29.3%) | 21,841 — 21,760 (**99.6%**) |
+| Share of prompt tokens recomputed, six turns | 195,436 of 271,084 (72%) | 35,980 of 316,428 (11%) |
+
+"Before" is the same server with LiteLLM's callback not folding inline system messages; "after" is the same callback enabled for DeepSeek. Wall time per turn did not change much
+(6–9 s either way) because these 20–30k-token prompts prefill in 2–3 s and the turns are dominated by the agent loop and generation; the saving matters most for long contexts
+and many concurrent sessions.
+
+**Controlled replay.** The captured Claude Code request bodies were replayed one at a time (a unique nonce at the top so each pair starts cold), reading the counters per request.
+Reuse of the second request in each pair, before the fix: 6,144 tokens (23–24%) every time, regardless of whether `cache_control` or `safeguards` fields were stripped;
+after the fix: 19,968 of 25,806 tokens (77%, the maximum possible there), 25,728 of 26,172 (98.3%) and 26,112 of 26,793 (97.5%).
+
+**Bisect** (synthetic requests on the Anthropic endpoint, second request = first + one assistant turn + a new user message; the "possible" share is ~100% in every row):
+
+| Request shape | Reused |
+|---|---|
+| plain messages | 99.6% |
+| + the 23 Claude Code tools / the Claude Code system prompt / adaptive thinking with effort max | 99.7% / 99.7% / 99.6% (all together 99.8%) |
+| tool call + tool result in history | 99.6% |
+| thinking block in an earlier assistant turn | 99.8% |
+| **inline `role:system` message** (hook context first; another appended on the second request) | **58.2%** |
+| the same, followed by a tool call and result | 58.1% |
+| (`bench/inline_system_test.py`, Claude Code's proportions) no inline / inline / folded | 99.7% / 22.1% / 99.4% |
+
+Mechanism and fix: [TUNING.md §4b](TUNING.md#4b-caching-what-is-reused-and-what-is-not).
+
 ## Engram-on-NVMe micro-benchmark (`patches/engram-nvme/test_nvme_lookup.py`)
 
 Rows drawn at random from the whole 384M-row table (cold), one layer, one rank, torch intra-op threads set to 1 as in serving:

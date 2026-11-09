@@ -10,6 +10,7 @@ their own licenses:
   `LICENSES/Diffbot-recipe-MIT.txt`). The change replaces host execution of model-generated code with a sandboxed container run.
 - `bench/run_quality.sh` calls Diffbot's recipe scripts (`bench/len_sweep.py`, `test-toolcall.py`, `test-image.py`, `needle-test.py`, `fetch-evaldata.sh`)
   from your own checkout of the recipe; they are not included here. Their GSM8K and HumanEval datasets are MIT-licensed OpenAI releases.
+- `examples/litellm_fold_inline_system.py` is original code that uses LiteLLM's public `CustomLogger` interface (LiteLLM is MIT-licensed and not included here).
 - `compose/docker-compose.yml` reproduces the environment variables of Diffbot's `serve/serve.sh` (MIT, same license text as above).
 
 Not included, but used inside the images the recipe builds: ExLlamaV3 (MIT) and the vllm-exl3 plugin (AGPL-3.0, see the recipe's notices). The model

@@ -113,6 +113,10 @@ curl -s -H "Authorization: Bearer $API_KEY" -H 'Content-Type: application/json' 
 bash bench/run_quality.sh      # the recipe's suite: expect sweep 11/11, tools OK, image OK, needles found, GSM8K ~98.5 %, HumanEval ~96 %
 ```
 
+**Using Claude Code (or another client that sends `system` messages inside the conversation)?** Put LiteLLM in front and install
+[`examples/litellm_fold_inline_system.py`](../examples/litellm_fold_inline_system.py), otherwise its prefix-cache hits stay at 13–29% per turn; see
+[TUNING.md §4b](TUNING.md#claude-code-and-inline-system-messages-read-this-if-you-use-claude-code). `bench/claude_code_cache.py` measures it.
+
 The first requests after boot are slow while the remaining kernels compile. Benchmarks and what to expect: [BENCHMARKS.md](BENCHMARKS.md).
 
 ## 9. Day-to-day

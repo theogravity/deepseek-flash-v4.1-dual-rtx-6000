@@ -19,6 +19,8 @@ ran it on 246 GiB.** The stock recipe pins ~230 GiB and does not fit on a 246 Gi
 - **Kept the 512-slot VRAM expert cache:** removing it to grow the KV pool made decode 2.3× slower with a 10-core-per-GPU CPU pool.
 - **512k window, 6 sequences, prefill chunk 8192:** a 2.77M-token fp8 KV pool (5.3× a full request, so six 400k sessions stay on the GPU). The smaller chunk frees ~3.2 GiB of
   VRAM per card at the cost of ~10–20% single-stream cold-prefill speed; decode is unchanged.
+- **Prefix-cache fix for Claude Code:** a LiteLLM callback that folds Claude Code's inline `system` messages into user text. Without it real sessions hit only 13–29% of the
+  prefix cache (6,144 tokens per request); with it 94.7–99.6% on later turns, and the recomputed share of prompt tokens falls from 72% to 11% ([details](docs/TUNING.md#claude-code-and-inline-system-messages-read-this-if-you-use-claude-code)).
 - **API key:** `--api-key` plus a small auth patch so clients that send `x-api-key` (LiteLLM's `anthropic/` provider) work; `/health` stays open for healthchecks.
 - **LMCache-compatible memory settings:** `expandable_segments` off, `SYS_PTRACE` + `seccomp=unconfined`, an LRU eviction block on the disk tier.
 - **Sandboxed validation:** the recipe's quality suite runs HumanEval programs in a no-network container instead of on the host.
@@ -33,6 +35,7 @@ Hugging Face repo above. Everything here was developed and measured on one machi
 | Engram tables on NVMe, 32-thread gather | [`patches/engram-nvme`](patches/engram-nvme) |
 | LMCache server launcher, derived image | [`patches/lmcache`](patches/lmcache) |
 | `x-api-key` support for the API key | [`patches/api-auth`](patches/api-auth) |
+| Claude Code prefix-cache fix (LiteLLM callback) | [`examples/litellm_fold_inline_system.py`](examples/litellm_fold_inline_system.py) |
 | Serving config (window, sequences, chunk, KV pool, CPU experts, expert cache, memory settings) | [`compose/docker-compose.yml`](compose/docker-compose.yml) |
 | Measurements, sandboxed quality suite | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), [`bench/`](bench) |
 
@@ -107,7 +110,7 @@ LICENSES/       third-party license texts
 
 - One machine, one workload mix. Decode numbers are for greedy code-edit prompts; free-form creative text at temperature 0.6 measured
   about 3× lower because speculative decoding accepts fewer drafts.
-- Caching is prefix-only (vLLM's prefix cache plus LMCache): appended text is cheap, but a change near the start of a prompt recomputes everything after it ([`docs/TUNING.md`](docs/TUNING.md#4b-caching-what-is-reused-and-what-is-not)).
+- Caching is prefix-only (vLLM's prefix cache plus LMCache): appended text is cheap, but a change near the start of a prompt recomputes everything after it ([`docs/TUNING.md`](docs/TUNING.md#4b-caching-what-is-reused-and-what-is-not)). Clients that put `system` messages inside the conversation (Claude Code does) break it unless the inline-system fold in `examples/` is in front of the server.
 - Under saturation, small requests queue behind huge cold prefills (vLLM schedules FIFO); sessions already decoding are not slowed.
 - Cold prefill is ~10–30% slower than with the recipe's 16384 chunk; that is the price of the larger KV pool (see the tuning table for
   the alternatives, including a 1M-token-window variant).

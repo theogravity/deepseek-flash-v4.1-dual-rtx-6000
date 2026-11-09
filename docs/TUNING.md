@@ -160,6 +160,24 @@ it, and compaction resets the prefix. The recipe strips Claude Code's `x-anthrop
 prefix between requests. We did not measure hit rates in a real agent session. To see whether a restore happened, look for `Retrieved N tokens` and `Prefetch request completed` in the LMCache
 server log; vLLM's cumulative `External prefix cache hit rate` moved only a little in our tests, so it is not a reliable per-request signal.
 
+### Claude Code and inline system messages (read this if you use Claude Code)
+
+Claude Code sends `role: "system"` entries **inside** `messages`: hook context (SessionStart / UserPromptSubmit) and a `<total_tokens>…tokens left</total_tokens>` counter that
+is new on every request. On vLLM's Anthropic endpoint (`/v1/messages`, which LiteLLM's `anthropic/` provider calls) the V4.1 server folds them into the leading system
+section, so the start of the prompt changes on every request and only the part before the first change is reused. We found this by measuring real sessions (not by reading code):
+
+- Real Claude Code sessions hit only **13–29%** of prompt tokens per turn, and every request reused exactly **6,144 tokens** of a possible 20–26k.
+- A synthetic bisect isolated the cause: tool calls, tool results and thinking blocks in the history keep 99.6–99.8% reuse, an inline system message does not
+  (`bench/inline_system_test.py`: no inline system 99.7%, inline system **22.1%**, the same content folded into user text 99.4%).
+- The OpenAI-format `/tokenize` endpoint renders inline system messages in place and looks fine, so it does not reveal the problem. Test the Anthropic path.
+
+**Fix:** a LiteLLM callback that rewrites each inline system message into a `<system-reminder>` user text block merged into the adjacent user turn
+([`examples/litellm_fold_inline_system.py`](../examples/litellm_fold_inline_system.py), install instructions in its docstring; LiteLLM must be recreated to load it).
+After the fix, real sessions reuse 94.7–99.6% on turns 2–4, 84.7% for a brand-new session and 99.6% on resume, and recompute 11% of prompt tokens instead of 72% over the same kind of
+run ([BENCHMARKS.md](BENCHMARKS.md#prefix-cache-hit-rate-in-real-claude-code-sessions)). If you point Claude Code (or any client that sends inline system messages) straight at vLLM
+without LiteLLM, you need an equivalent rewrite in your proxy or client. To check any setup, read vLLM's counters: `vllm:prompt_tokens_by_source_total{source="local_cache_hit"|"local_compute"|"external_kv_transfer"}`
+on `:8001/metrics` (no key needed), before and after a request, or run `bench/claude_code_cache.py`.
+
 ## 5. Troubleshooting (every one of these was hit)
 
 | Symptom | Cause / fix |
@@ -180,6 +198,7 @@ server log; vLLM's cumulative `External prefix cache hit rate` moved only a litt
 | `docker compose up --force-recreate` takes > 3 min | The old container is stopping (`stop_grace_period: 240s`) or its engine hung; run it in the background and poll. |
 | `docker logs` shows two runs mixed | `docker restart` reuses the container; use `docker logs --since <boot time>` or recreate. |
 | vLLM `/reset_prefix_cache` returns 200 but the next request is still a GPU cache hit | It did not evict. Prove an LMCache restore by pushing ~2M tokens of other prompts through, or restart (the disk tier persists). Check vLLM's `External prefix cache hit rate` and the server's `Retrieved N tokens` log lines. |
+| Claude Code sessions recompute most of every prompt (per-turn prefix hits 13–29%, always exactly 6,144 reused tokens) | Inline `role:system` messages; fold them with `examples/litellm_fold_inline_system.py` (section 4b) and recreate LiteLLM. |
 | Benchmark numbers look 5–10× too good on a repeat run | Page cache (Engram rows, prompts) and prefix caches; use a fresh seed for every cold measurement. |
 
 ## 6. Not done / ideas
