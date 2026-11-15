@@ -1,10 +1,13 @@
 # Benchmarks and methodology
 
-Everything below was measured on one machine on 2026-11-09: Threadripper PRO 9965WX (24 cores, 4 CCDs, AVX-512), 8×32 GiB DDR5-5600
+Everything below was measured on one machine on 2026-11-09, except the 2026-11-14 revision section and the decode and concurrency numbers, measured on 2026-11-15: Threadripper PRO 9965WX (24 cores, 4 CCDs, AVX-512), 8×32 GiB DDR5-5600
 (246 GiB usable), two RTX PRO 6000 Blackwell Workstation cards (97,887 MiB each, peer-to-peer enabled), PCIe 5 NVMe drives, the
 recipe image built from Diffbot's pack (vLLM nightly `5555a2d8`). The scripts are in [`../bench`](../bench); the server is the one in
 [`../compose/docker-compose.yml`](../compose/docker-compose.yml) unless a row says otherwise. Run-to-run noise is real (first passes
 include cache warm-up), so where a number is "warm" it is the second pass.
+
+**GPU settings (LACT, profile "Default"; recorded from a screenshot of one card, assumed identical on the other, and not recorded for the 2026-11-09 runs):** power limit 600/600 W, PowerMizer Auto,
+GPU P-State 0 clock offset +350 MHz, voltage boost 0 %, VRAM P-State 0 clock offset +4000 MHz, GPU and VRAM locked clocks off. Absolute rates here depend on it; stock clocks will be slower.
 
 ## Methodology and pitfalls
 
@@ -61,6 +64,19 @@ and was ~2% slower at 8192. A single 498k request takes 41-42 s total instead of
 (GSM8K-200 197, HumanEval-164 158, sweep 11/11, tools, images, needles). Peak VRAM, single 498k prefill: 95,958 MiB (1.9 GiB under the 97,887 limit); six concurrent 404k requests: 96,540 MiB (1.3 GiB).
 The 20-minute soak was not re-run after the update.
 
+**Recipe update of 2026-11-14 (HF commit b98e, pack HEAD 6110453), CPU-runtime revision** (kernels and the CPU runtime rebuilt; image and weights unchanged). Measured on 2026-11-15 with a new seed per cold run.
+Adopted: `xmoe_bulk`, the plugin module (`EXL3_DO_MIN_TOKENS=128`, `EXL3_FAT_SKIP_DEAD`, `DS41_ACTQ_STRIDED`). Total request time of one ~498k-token cold request (`bench/long_prefill.py`, ~498.3k tokens each):
+
+| Configuration | Total time | Peak VRAM (GPU 1) |
+|---|---|---|
+| 2026-11-09 setup (above) | 41-42 s | 95,958 MiB |
+| 11-14 revision with `DS41_WKV_REPLICATE=1` + `DS41_MHC_OVERLAP=3` (upstream's defaults) | 71.6 s, 70.6 s | 96,536 MiB |
+| **11-14 revision, those two off (used)** | **39.9 s** (first run after boot 49.5 s: kernel warm-up) | 95,962 MiB |
+
+Upstream tuned the two rejected switches for prefill chunk 16384; at our 8192 the pair made the request 1.8x as long and left a 1.3 GiB VRAM margin. Which of the two is responsible was not tested.
+Decode (warm second pass, 1 / 4 / 6 streams) 282 / 518 / 557 tok/s against 274 / 508 / 541 above: a few percent, within noise. Six concurrent ~404k-token cold requests (fresh seeds): **187 s**, 2 s when repeated, peak VRAM 95,999 MiB (1.85 GiB margin).
+GSM8K-200 197 (98.5 %), HumanEval-164 159 (97.0 %), short sweep 11/11, tool calls, images and needles to 448k pass. The 16k / 60k / 196k / 505k TTFT table above was not re-run, and neither was the 20-minute soak.
+
 For reference, the model card reports ~11.2–11.5k tok/s for a fresh ~40k-token prefill on Diffbot's own 2-GPU build. The recipe's needle script (a repeated sentence,
 so highly cacheable and not comparable to the numbers above) read 14.0k tok/s at 100k tokens, 16.6k at 249k and 17.4k at 448k.
 
@@ -102,18 +118,19 @@ for the VRAM-sampled run; `python3 -I bench/six400.py 800 128000` for the concur
 
 ## Decode
 
-Single stream, greedy code edits on the 25.6k warm prefix: **~250 tok/s warm** (192 on the first pass). Aggregate decode at 1 / 4 / 6 streams is in the next section.
+Single stream, greedy code edits on the 25.6k warm prefix: **~280 tok/s warm** (185 on the first pass). Aggregate decode at 1 / 4 / 6 streams is in the next section.
 
 ## Concurrency
 
-Aggregate decode, warm second pass, final configuration: **1 / 4 / 6 streams = 251 / 446 / 534 tok/s** (first pass 206 / 427 / 548).
+Aggregate decode, warm second pass, final configuration (2026-11-14 revision): **1 / 4 / 6 streams = 282 / 518 / 557 tok/s** (first pass 185 / 395 / 548; 2026-11-09 setup: 274 / 508 / 541).
 
 Six concurrent requests of ~404k tokens each (2.4M prompt tokens, more than the 2.77M-token KV pool can hold alongside decode), needle
 at the start of each:
 
 | Configuration | Cold pass wall time | Same six again | VRAM peak |
 |---|---|---|---|
-| Final (chunk 8192, KV 11 GiB, pool 2.77M tokens) | 265 s (all six found the needle) | 4 s total, 1.4–3.5 s each | 95,872 MiB |
+| Chunk 8192, KV 11 GiB, pool 2.77M tokens, before the 2026-11-09 update | 265 s (all six found the needle) | 4 s total, 1.4–3.5 s each | 95,872 MiB |
+| **Final**: 2026-11-14 revision (197 s with only the 2026-11-09 layer skip) | **187 s** | 2 s total | 95,999 MiB |
 | Chunk 16384, KV 8.5 GiB, pool 1.73M tokens | 178 s | 4 s total, 1.1–3.8 s each | 96,546 MiB |
 
 A ~295k-token cold prefill does not slow sessions that are already decoding: three decode streams ran 142–153 tok/s alone and 146–149 tok/s

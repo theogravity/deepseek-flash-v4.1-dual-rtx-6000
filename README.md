@@ -20,6 +20,9 @@ ran it on 246 GiB.** The stock recipe pins ~230 GiB and does not fit on a 246 Gi
 - **CPU host-experts for decode only:** decode +12–17% (prefill on the CPU pools measured 15–30% slower, so it stays off).
 - **Diffbot's 2026-11-09 recipe update, selectively:** its layer skip and tokenizer memo are on (prefill 6-9% faster); thread isolation and the fixed MXFP8 tile are off because
   they measured slower with the NVMe gather ([ablation](docs/BENCHMARKS.md#prefill)).
+- **Diffbot's 2026-11-14 CPU-runtime revision, selectively:** the new `xmoe_bulk` decode kernel, the plugin module and its small prefill/fat-path changes are on (decode +2-3% over the 11-09 setup, which is
+  within noise; a 498k prefill 4% faster; six concurrent 404k 197 s -> 187 s); its Engram-`wkv` replication and mHC overlap are off because a 498k prefill took 1.8x as long with them at our prefill chunk of 8192
+  ([details](docs/TUNING.md#6b-the-cpu-runtime-revision-of-2026-11-14-what-is-on-and-what-is-off)).
 - **Kept the 512-slot VRAM expert cache:** removing it to grow the KV pool made decode 2.3× slower with a 10-core-per-GPU CPU pool.
 - **512k window, 6 sequences, prefill chunk 8192:** a 2.77M-token fp8 KV pool (5.3× a full request, so six 400k sessions stay on the GPU). The smaller chunk frees ~3.2 GiB of
   VRAM per card at the cost of ~10–20% single-stream cold-prefill speed; decode is unchanged.
@@ -45,19 +48,19 @@ Hugging Face repo above. Everything here was developed and measured on one machi
 
 ## Results (our machine)
 
-Threadripper PRO 9965WX (24 cores), 8×32 GiB DDR5-5600, two RTX PRO 6000 (96 GB), PCIe 5 NVMe. Method and caveats in
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Threadripper PRO 9965WX (24 cores), 8×32 GiB DDR5-5600, two RTX PRO 6000 (96 GB, LACT profile: 600 W limit, GPU P-State 0 clock offset +350 MHz, VRAM P-State 0 offset +4000 MHz, voltage boost 0 %,
+clocks not locked; stock clocks will be slower), PCIe 5 NVMe. Method and caveats in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 | | |
 |---|---|
 | Single-stream cold prefill (time to first token) | 1.4 s @16k, 5.0 s @60k, 15.7 s @196k, 41.6 s @505k tokens (~12k tok/s at long lengths; [details](docs/BENCHMARKS.md#prefill)) |
-| Single-stream decode (greedy code edits) | ~250 tok/s warm |
-| Aggregate decode, 1 / 4 / 6 streams | ~270 / ~500 / ~540 tok/s |
-| Six concurrent ~404k-token requests (2.4M tokens) | all complete: 197 s cold, 1–4 s when repeated |
+| Single-stream decode (greedy code edits) | ~280 tok/s warm |
+| Aggregate decode, 1 / 4 / 6 streams | ~280 / ~520 / ~555 tok/s |
+| Six concurrent ~404k-token requests (2.4M tokens) | all complete: 187 s cold, 1–4 s when repeated |
 | Restore of a 1M-token prompt evicted from the GPU | 1.9 s from RAM, 2.7 s from disk after a restart (109 s cold) |
 | GPU KV pool | 2.77M tokens (5.3× a full 512k request) |
-| Quality (recipe's own suite) | GSM8K-200 98.5 %, HumanEval-164 96.3 % (matches upstream's published GPU-only numbers), needles to 448k, tools, images |
-| 20-minute soak, six workers | 105 requests, 0 errors, no VRAM drift |
+| Quality (recipe's own suite) | GSM8K-200 98.5 %, HumanEval-164 97.0 % (upstream publishes 97.0–97.6 %), needles to 448k, tools, images |
+| 20-minute soak, six workers | 105 requests, 0 errors, no VRAM drift (run before the 2026-11-09 update, not repeated since) |
 
 ## Requirements
 

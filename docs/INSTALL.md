@@ -51,7 +51,7 @@ If the script prints nothing and exits 0, check `echo $SHELLOPTS`: an exported `
 ## 4. Build the kernels and the CPU runtime (~3 min, no GPU needed)
 
 ```bash
-MAX_JOBS=6 bash $R/kernels/build.sh   # expect: built xmoe, xmoe_do, xmoe_do_i8, fp8ar_ext, rowtopk
+MAX_JOBS=6 bash $R/kernels/build.sh   # expect: built xmoe, xmoe_bulk, xmoe_do, xmoe_do_i8, fp8ar_ext, rowtopk
 bash $R/cpuexp/build.sh               # expect libcpuexp_rt.so, libcpuexp_gpu.so, bwprobe in $R/cpuexp/build/
 ```
 
@@ -74,7 +74,7 @@ It only adds `lmcache==0.5.7` (with `--no-deps`, so the recipe's torch/NCCL/vLLM
 
 ## 6. Check the patches match your image
 
-The compose file also mounts three files from the recipe's `recipe/patches/vllm/` (the 2026-11-09 update, HF commit 2205b25); if `ls $R/patches/vllm/deepseek_v41_memo.py` is missing, re-run the `hf download` from step 2.
+The compose file also mounts three files from the recipe's `recipe/patches/vllm/` (the 2026-11-09 update, HF commit 2205b25) and `recipe/patches/vllm-exl3/exl3_cpu_speedups.py` (the 2026-11-14 revision, HF commit b98e); if `ls $R/patches/vllm/deepseek_v41_memo.py $R/patches/vllm-exl3/exl3_cpu_speedups.py` reports a missing file, re-run the `hf download` from step 2. After updating an existing pack, redo step 4 (kernels and CPU runtime) before recreating the container.
 
 The mounted patches were generated against the image the recipe built on 2026-11-08. If your build used a newer recipe commit, regenerate them:
 [TUNING.md §2](TUNING.md#2-rebuild-from-scratch) has the three `docker run ... cat` commands and the two `apply_patch.py` invocations. Each patcher

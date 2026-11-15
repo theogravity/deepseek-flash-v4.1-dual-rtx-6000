@@ -3,7 +3,7 @@
 Reference for running DeepSeek V4.1 Flash (Diffbot EXL3 3-bit pack) on two RTX PRO 6000 Blackwell cards with the configuration in
 [`../compose/docker-compose.yml`](../compose/docker-compose.yml). Target workload: **up to 6 concurrent agents, 512k max context, compaction
 at 400k.** All numbers were measured on one machine (Threadripper PRO 9965WX, 8×32 GiB DDR5-5600, 246 GiB usable, PCIe 5 NVMe) on
-2026-11-09; see [BENCHMARKS.md](BENCHMARKS.md) for methodology.
+2026-11-09 (the 2026-11-14 CPU-runtime revision, section 6b, on 2026-11-15, with the GPU settings listed in [BENCHMARKS.md](BENCHMARKS.md)); see [BENCHMARKS.md](BENCHMARKS.md) for methodology.
 
 ## 1. What runs where
 
@@ -213,6 +213,23 @@ two of the update's switches **off**, because the ablation in [BENCHMARKS.md](BE
 Net: prefill 6-9% faster, six concurrent 404k cold requests 265 s -> 197 s, decode and quality unchanged. Requires the recipe files at or past that commit: run the `hf download` again.
 A missing mounted file makes Docker create a directory at the path and the server fails to import. To roll back, delete the three mounts. The VRAM margin under six concurrent 404k prompts
 is 1.3 GiB (a little under the 1.4 GiB rule of thumb); lower `--kv-cache-memory` to ~10.5 GiB if you want it back.
+
+## 6b. The CPU-runtime revision of 2026-11-14 (what is on and what is off)
+
+Diffbot's HF commit `b98e` (pack HEAD `6110453`) changes the CPU runtime, the `vllm-exl3` plugin module and the kernels; the image and weights are unchanged. `serve.sh` turns it on with `CPU_EXPERTS=1` and
+`DS41_CPU_SPEEDUPS=2`; this compose file bypasses `serve.sh`, so it sets the same switches itself. To upgrade an existing install: run the `hf download` again, then **rebuild both** `kernels/build.sh`
+(it now builds `xmoe_bulk`) and `cpuexp/build.sh` (a runtime built before this revision ignores `EXL3_CPU_PF_STREAM_M`), then recreate the container. The compose file mounts the new
+`recipe/patches/vllm-exl3/exl3_cpu_speedups.py` over the image's `vllm_exl3/exl3.py`.
+
+On: `XMOE_EXT=xmoe_bulk`, the plugin mount, `EXL3_DO_MIN_TOKENS=128`, `EXL3_FAT_SKIP_DEAD=1`, `DS41_ACTQ_STRIDED=1` (and the `EXL3_CPU_PF_*` values, which do nothing while `EXL3_CPU_EXPERTS_PREFILL=0`).
+
+Off, measured: `DS41_WKV_REPLICATE=1` (Engram `wkv` replicated per rank) and `DS41_MHC_OVERLAP=3` (prefill mHC boundary kernels). With both on, a ~498k-token cold request took 71.6 s and 70.6 s against 39.9 s
+with both off, and the VRAM peak rose to 96,536 MiB (1.3 GiB margin). Upstream tuned them for prefill chunk 16384; this setup uses 8192. If you run chunk 16384, they are worth re-testing; the two were not tested separately.
+
+Still off from section 6: `EXL3_CPU_EXPERTS_ISOLATE`, `DS41_MXFP8_TACTIC`. Not used: `DS41_DRAFTER=code` (upstream's own 2-GPU numbers show lower aggregate at 4 streams than the released DSpark head).
+
+Net on this machine versus the 2026-11-09 setup: 498k cold request 39.9 s vs 41-42 s, six concurrent 404k cold 187 s vs 197 s, decode within a few percent (282 / 518 / 557 vs 274 / 508 / 541 tok/s), quality unchanged
+(GSM8K-200 197, HumanEval-164 159). Rollback: remove the plugin mount, set `XMOE_EXT=xmoe`, delete the 2026-11-14 env block. The VRAM margin under six concurrent 404k prompts is 1.85 GiB.
 
 ## 7. Not done / ideas
 
